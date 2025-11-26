@@ -1,0 +1,281 @@
+from typing import List
+from uuid import UUID
+
+from fastapi import Depends, HTTPException
+from fastapi.routing import APIRouter
+from sqlalchemy.orm import Session
+
+from database import get_db
+from models.detection import IconDetection, IconLabelMatch, IconTemplate
+from models.project import Project, PROJECT_STATUSES
+from schemas.detection import (
+    BatchVerificationRequest,
+    CreateIconDetectionRequest,
+    IconBBoxRequest,
+    IconDetectionResponse,
+    IconLabelMatchResponse,
+    IconTemplateBatchRequest,
+    IconTemplateResponse,
+    UpdateDetectionRequest,
+)
+from services.batch_service import BatchService, get_batch_service
+from services.icon_service import IconService, get_icon_service
+from services.matching_service import MatchingService, get_matching_service
+from utils.state_manager import StateManager
+
+router = APIRouter()
+
+
+@router.post(
+    "/legend-items/{legend_item_id}/draw-icon-bbox", response_model=IconTemplateResponse
+)
+def draw_icon_bbox(
+    legend_item_id: UUID,
+    bbox: IconBBoxRequest,
+    icon_service: IconService = Depends(get_icon_service),
+):
+    print(f"📦 [ICON BBOX] Saving icon bbox for legend item: {legend_item_id}")
+    print(f"📐 [ICON BBOX] Bbox: {bbox.model_dump()}")
+    template = icon_service.save_icon_bbox(legend_item_id, bbox.model_dump())
+    print(f"✅ [ICON BBOX] Icon template saved successfully!")
+    return IconTemplateResponse.model_validate(template)
+
+
+@router.post(
+    "/legend-items/{legend_item_id}/preprocess-icon",
+    response_model=IconTemplateResponse,
+)
+def preprocess_icon_template(
+    legend_item_id: UUID,
+    icon_service: IconService = Depends(get_icon_service),
+):
+    print(f"🔧 [PREPROCESS] Starting icon preprocessing for legend item: {legend_item_id}")
+    template = icon_service.preprocess_icon(legend_item_id)
+    print(f"✅ [PREPROCESS] Icon preprocessing complete!")
+    return IconTemplateResponse.model_validate(template)
+
+
+@router.post(
+    "/icon-templates/batch-save",
+    response_model=List[IconTemplateResponse],
+)
+def batch_save_icon_templates(
+    payload: IconTemplateBatchRequest,
+    icon_service: IconService = Depends(get_icon_service),
+):
+    templates = [
+        icon_service.save_icon_bbox(item.legend_item_id, item.bbox.model_dump())
+        for item in payload.templates
+    ]
+    return [IconTemplateResponse.model_validate(template) for template in templates]
+
+
+@router.get(
+    "/legend-items/{legend_item_id}/icon-template", response_model=IconTemplateResponse
+)
+def get_icon_template(
+    legend_item_id: UUID,
+    db: Session = Depends(get_db),
+):
+    template = (
+        db.query(IconTemplate)
+        .filter(IconTemplate.legend_item_id == legend_item_id)
+        .first()
+    )
+    if not template:
+        raise HTTPException(status_code=404, detail="Icon template not found.")
+    return IconTemplateResponse.model_validate(template)
+
+
+@router.post(
+    "/projects/{project_id}/detect-icons", response_model=List[IconDetectionResponse]
+)
+def detect_icons(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    icon_service: IconService = Depends(get_icon_service),
+):
+    print(f"🔍 [ICON DETECTION] Starting icon detection for project: {project_id}")
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        print(f"❌ [ICON DETECTION] Project not found: {project_id}")
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    print(f"📊 [ICON DETECTION] Project found, running detection service...")
+    detections = icon_service.detect_icons(project)
+    print(f"✅ [ICON DETECTION] Detection complete! Found {len(detections)} icon detections")
+    
+    current_idx = PROJECT_STATUSES.index(project.status)
+    target_idx = PROJECT_STATUSES.index("icons_extracted")
+    if current_idx <= target_idx:
+        StateManager(db).transition(project, "icons_extracted", "icon_detection_complete")
+    return [IconDetectionResponse.model_validate(det) for det in detections]
+
+
+@router.get(
+    "/projects/{project_id}/icon-detections",
+    response_model=List[IconDetectionResponse],
+)
+def list_icon_detections(project_id: UUID, db: Session = Depends(get_db)):
+    results = (
+        db.query(IconDetection)
+        .filter(IconDetection.project_id == project_id)
+        .order_by(IconDetection.created_at)
+        .all()
+    )
+    return [IconDetectionResponse.model_validate(det) for det in results]
+
+
+@router.post(
+    "/projects/{project_id}/match-icons-labels",
+    response_model=List[IconLabelMatchResponse],
+)
+def match_icons_and_labels(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    matching_service: MatchingService = Depends(get_matching_service),
+):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    matches = matching_service.match_icons_to_labels(project)
+    StateManager(db).transition(project, "completed", "matching_complete")
+    return [IconLabelMatchResponse.model_validate(match) for match in matches]
+
+
+@router.post(
+    "/projects/{project_id}/icon-detections/batch-verify",
+    response_model=List[IconDetectionResponse],
+)
+def batch_verify_detections(
+    project_id: UUID,
+    payload: BatchVerificationRequest,
+    db: Session = Depends(get_db),
+    batch_service: BatchService = Depends(get_batch_service),
+):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    count = (
+        db.query(IconDetection)
+        .filter(
+            IconDetection.project_id == project_id,
+            IconDetection.id.in_(payload.detection_ids),
+        )
+        .count()
+    )
+    if count != len(payload.detection_ids):
+        raise HTTPException(
+            status_code=400, detail="One or more detection IDs do not belong to project."
+        )
+
+    detections = batch_service.verify_detections(payload.detection_ids)
+    return [IconDetectionResponse.model_validate(det) for det in detections]
+
+
+@router.get(
+    "/projects/{project_id}/matched-results",
+    response_model=List[IconLabelMatchResponse],
+)
+def list_matched_results(project_id: UUID, db: Session = Depends(get_db)):
+    matches = (
+        db.query(IconLabelMatch)
+        .join(IconDetection)
+        .filter(IconDetection.project_id == project_id)
+        .all()
+    )
+    return [IconLabelMatchResponse.model_validate(match) for match in matches]
+
+
+@router.get("/detections", response_model=List[IconDetectionResponse])
+def get_icon_detections(
+    legend_item_id: UUID = None,
+    project_id: UUID = None,
+    db: Session = Depends(get_db),
+):
+    """Get icon detections filtered by legend_item_id or project_id."""
+    query = db.query(IconDetection)
+    
+    if legend_item_id:
+        query = query.join(IconTemplate).filter(IconTemplate.legend_item_id == legend_item_id)
+    elif project_id:
+        query = query.filter(IconDetection.project_id == project_id)
+    
+    detections = query.all()
+    return [IconDetectionResponse.model_validate(d) for d in detections]
+
+
+@router.post("/detections", response_model=IconDetectionResponse, status_code=201)
+def create_icon_detection(
+    data: CreateIconDetectionRequest,
+    db: Session = Depends(get_db),
+):
+    """Create a new icon detection manually."""
+    # Calculate center from bbox
+    bbox = data.bbox_normalized
+    center_x = (bbox[1] + bbox[3]) / 2
+    center_y = (bbox[0] + bbox[2]) / 2
+    
+    detection = IconDetection(
+        project_id=data.project_id,
+        icon_template_id=data.icon_template_id,
+        page_id=data.page_id,
+        bbox=bbox,
+        center=[center_y, center_x],
+        confidence=data.confidence,
+        scale=data.scale,
+        rotation=data.rotation,
+        verification_status="manual"
+    )
+    db.add(detection)
+    db.commit()
+    db.refresh(detection)
+    return IconDetectionResponse.model_validate(detection)
+
+
+@router.put("/detections/{detection_id}", response_model=IconDetectionResponse)
+def update_icon_detection(
+    detection_id: UUID,
+    data: UpdateDetectionRequest,
+    db: Session = Depends(get_db),
+):
+    """Update an existing icon detection."""
+    detection = db.query(IconDetection).filter(IconDetection.id == detection_id).first()
+    if not detection:
+        raise HTTPException(status_code=404, detail="Icon detection not found.")
+    
+    if data.bbox_normalized is not None:
+        detection.bbox = data.bbox_normalized
+        # Recalculate center
+        bbox = data.bbox_normalized
+        center_x = (bbox[1] + bbox[3]) / 2
+        center_y = (bbox[0] + bbox[2]) / 2
+        detection.center = [center_y, center_x]
+    
+    if data.confidence is not None:
+        detection.confidence = data.confidence
+    
+    if data.verification_status is not None:
+        detection.verification_status = data.verification_status
+    
+    db.commit()
+    db.refresh(detection)
+    return IconDetectionResponse.model_validate(detection)
+
+
+@router.delete("/detections/{detection_id}", status_code=204)
+def delete_icon_detection(
+    detection_id: UUID,
+    db: Session = Depends(get_db),
+):
+    """Delete an icon detection."""
+    detection = db.query(IconDetection).filter(IconDetection.id == detection_id).first()
+    if not detection:
+        raise HTTPException(status_code=404, detail="Icon detection not found.")
+    
+    db.delete(detection)
+    db.commit()
+
+
