@@ -11,16 +11,46 @@ from lib.icon_text_label_matcher import (
     Detection as MatcherDetection,
     assign_labels_to_icons_dynamic,
 )
+from services.tag_overlap_service import TagOverlapService, get_tag_overlap_service
+from services.storage_service import StorageService, get_storage_service
+from services.llm_service import LLMService, get_llm_service
 
 
 class MatchingService:
     """Matches icons with labels based on detections."""
 
-    def __init__(self, db: Session):
+    def __init__(
+        self,
+        db: Session,
+        tag_overlap_service: TagOverlapService = None,
+    ):
         self.db = db
+        self.tag_overlap_service = tag_overlap_service
 
-    def match_icons_to_labels(self, project: Project) -> List[IconLabelMatch]:
+    def match_icons_to_labels(
+        self,
+        project: Project,
+        resolve_overlaps: bool = True,
+    ) -> List[IconLabelMatch]:
+        """
+        Match icons to labels using distance-based matching.
+        Optionally resolves tag overlaps automatically.
+        
+        Args:
+            project: Project to process
+            resolve_overlaps: Whether to automatically resolve tag overlaps
+            
+        Returns:
+            List of IconLabelMatch records
+        """
         print(f"[MATCHING] Starting matching for project {project.id}")
+        
+        # Step 1: Resolve tag overlaps if enabled and service is available
+        if resolve_overlaps and self.tag_overlap_service:
+            print(f"[MATCHING] Resolving tag overlaps before matching...")
+            overlap_result = self.tag_overlap_service.resolve_overlaps(project)
+            print(f"[MATCHING] Overlap resolution: {overlap_result['tags_removed']} tags removed")
+        
         pages = (
             self.db.query(PDFPage)
             .filter(PDFPage.project_id == project.id)
@@ -49,30 +79,37 @@ class MatchingService:
             print(f"[MATCHING] Deleted {len(match_id_values)} existing matches")
 
         created_matches: List[IconLabelMatch] = []
+        matched_label_ids = set()
 
         for page in pages:
             print(f"[MATCHING] Processing page {page.page_number} (id={page.id})")
+            
+            # Only use verified icon detections
             icon_records = (
                 self.db.query(IconDetection)
                 .filter(
                     IconDetection.project_id == project.id,
                     IconDetection.page_id == page.id,
+                    IconDetection.verification_status == "verified",
                 )
                 .all()
             )
+            
+            # Only use verified label detections
             label_records = (
                 self.db.query(LabelDetection)
                 .filter(
                     LabelDetection.project_id == project.id,
                     LabelDetection.page_id == page.id,
+                    LabelDetection.verification_status == "verified",
                 )
                 .all()
             )
             
-            print(f"[MATCHING] Page {page.page_number}: {len(icon_records)} icons, {len(label_records)} labels")
+            print(f"[MATCHING] Page {page.page_number}: {len(icon_records)} verified icons, {len(label_records)} verified labels")
 
             if not icon_records:
-                print(f"[MATCHING] Skipping page {page.page_number} - no icons")
+                print(f"[MATCHING] Skipping page {page.page_number} - no verified icons")
                 continue
 
             icon_tuple = [
@@ -102,9 +139,16 @@ class MatchingService:
                         scale=record.scale,
                         rotation=record.rotation,
                         center=tuple(record.center),
-                        text_label=record.label_template.legend_item.label_text
-                        if record.label_template and record.label_template.legend_item
-                        else None,
+                        # Use tag_name from label_template, fallback to legend_item.label_text
+                        text_label=(
+                            record.label_template.tag_name 
+                            if record.label_template and record.label_template.tag_name
+                            else (
+                                record.label_template.legend_item.label_text
+                                if record.label_template and record.label_template.legend_item
+                                else None
+                            )
+                        ),
                     ),
                 )
                 for record in label_records
@@ -155,13 +199,19 @@ class MatchingService:
                         label_detection_id=label_db.id,
                         distance=distance,
                         match_confidence=icon_db.confidence if confidence else 0.0,
+                        match_method="distance",
+                        match_status="matched",
                     )
+                    matched_label_ids.add(label_db.id)
                 else:
+                    # Unmatched icon
                     match = IconLabelMatch(
                         icon_detection_id=icon_db.id,
                         label_detection_id=None,
                         distance=0.0,
                         match_confidence=0.0,
+                        match_method="distance",
+                        match_status="unmatched_icon",
                     )
                 self.db.add(match)
                 created_matches.append(match)
@@ -169,9 +219,24 @@ class MatchingService:
         self.db.commit()
         for match in created_matches:
             self.db.refresh(match)
+        
+        # Log summary
+        matched_count = len([m for m in created_matches if m.match_status == "matched"])
+        unmatched_count = len([m for m in created_matches if m.match_status == "unmatched_icon"])
+        print(f"[MATCHING] Complete: {matched_count} matched, {unmatched_count} unmatched icons")
+        
         return created_matches
 
 
-def get_matching_service(db: Session = Depends(get_db)) -> MatchingService:
-    return MatchingService(db=db)
+def get_matching_service(
+    db: Session = Depends(get_db),
+    storage_service: StorageService = Depends(get_storage_service),
+    llm_service: LLMService = Depends(get_llm_service),
+) -> MatchingService:
+    tag_overlap_service = TagOverlapService(
+        db=db,
+        storage_service=storage_service,
+        llm_service=llm_service,
+    )
+    return MatchingService(db=db, tag_overlap_service=tag_overlap_service)
 

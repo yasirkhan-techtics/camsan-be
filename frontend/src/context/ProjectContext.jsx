@@ -11,6 +11,16 @@ export const useProject = () => {
   return context;
 };
 
+// Initial AI status state
+const initialAIStatus = {
+  isRunning: false,
+  currentStep: 0,
+  totalSteps: 0,
+  stepDescription: '',
+  results: null,
+  error: null,
+};
+
 export const ProjectProvider = ({ children }) => {
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
@@ -23,6 +33,10 @@ export const ProjectProvider = ({ children }) => {
   const [matches, setMatches] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  
+  // AI verification state
+  const [aiStatus, setAIStatus] = useState(initialAIStatus);
+  const [verificationResults, setVerificationResults] = useState(null);
 
   const pageMap = React.useMemo(() => {
     const map = new Map();
@@ -261,6 +275,262 @@ export const ProjectProvider = ({ children }) => {
     }
   }, [selectedProject, fetchMatches]);
 
+  // Helper to update AI status
+  const updateAIStatus = useCallback((updates) => {
+    setAIStatus(prev => ({ ...prev, ...updates }));
+  }, []);
+
+  // Reset AI status
+  const resetAIStatus = useCallback(() => {
+    setAIStatus(initialAIStatus);
+  }, []);
+
+  // Dismiss AI status (keep results but hide)
+  const dismissAIStatus = useCallback(() => {
+    setAIStatus(prev => ({ ...prev, isRunning: false, results: null, error: null }));
+  }, []);
+
+  // Run icon detection with automatic LLM verification
+  const runDetectIconsWithVerification = useCallback(async () => {
+    if (!selectedProject) return;
+    
+    try {
+      // Step 1: Detect icons
+      updateAIStatus({
+        isRunning: true,
+        currentStep: 1,
+        totalSteps: 2,
+        stepDescription: 'Detecting icons using template matching...',
+        results: null,
+        error: null,
+      });
+      
+      await api.detectIcons(selectedProject.id);
+      await fetchProjectDetections();
+      
+      // Step 2: Verify with LLM
+      updateAIStatus({
+        currentStep: 2,
+        stepDescription: 'AI Agent verifying icon detections...',
+      });
+      
+      const verifyResponse = await api.verifyIconDetections(selectedProject.id);
+      const iconVerification = verifyResponse.data;
+      
+      // Refresh detections after verification
+      await fetchProjectDetections();
+      
+      // Update results
+      setVerificationResults(prev => ({
+        ...prev,
+        iconVerification,
+      }));
+      
+      updateAIStatus({
+        isRunning: false,
+        results: { iconVerification },
+      });
+      
+      return iconVerification;
+    } catch (err) {
+      updateAIStatus({
+        isRunning: false,
+        error: err.response?.data?.detail || err.message || 'Icon detection failed',
+      });
+      throw err;
+    }
+  }, [selectedProject, fetchProjectDetections, updateAIStatus]);
+
+  // Run label detection with automatic LLM verification
+  const runDetectLabelsWithVerification = useCallback(async () => {
+    if (!selectedProject) return;
+    
+    try {
+      // Step 1: Detect labels
+      updateAIStatus({
+        isRunning: true,
+        currentStep: 1,
+        totalSteps: 2,
+        stepDescription: 'Detecting tags using template matching...',
+        results: null,
+        error: null,
+      });
+      
+      await api.detectLabels(selectedProject.id);
+      await fetchProjectDetections();
+      
+      // Step 2: Verify with LLM
+      updateAIStatus({
+        currentStep: 2,
+        stepDescription: 'AI Agent verifying tag detections...',
+      });
+      
+      const verifyResponse = await api.verifyLabelDetections(selectedProject.id);
+      const labelVerification = verifyResponse.data;
+      
+      // Refresh detections after verification
+      await fetchProjectDetections();
+      
+      // Update results
+      setVerificationResults(prev => ({
+        ...prev,
+        labelVerification,
+      }));
+      
+      updateAIStatus({
+        isRunning: false,
+        results: { labelVerification },
+      });
+      
+      return labelVerification;
+    } catch (err) {
+      updateAIStatus({
+        isRunning: false,
+        error: err.response?.data?.detail || err.message || 'Tag detection failed',
+      });
+      throw err;
+    }
+  }, [selectedProject, fetchProjectDetections, updateAIStatus]);
+
+  // Run matching with automatic LLM matching for unmatched items
+  const runMatchWithLLM = useCallback(async () => {
+    if (!selectedProject) return;
+    
+    try {
+      // Step 1: Distance-based matching (includes auto tag overlap resolution)
+      updateAIStatus({
+        isRunning: true,
+        currentStep: 1,
+        totalSteps: 2,
+        stepDescription: 'Matching icons and tags by distance...',
+        results: null,
+        error: null,
+      });
+      
+      await api.matchIconsAndLabels(selectedProject.id);
+      await fetchMatches();
+      
+      // Step 2: LLM matching for unmatched items
+      updateAIStatus({
+        currentStep: 2,
+        stepDescription: 'AI Agent matching remaining unmatched items...',
+      });
+      
+      const llmMatchResponse = await api.llmMatchUnmatched(selectedProject.id);
+      const llmMatching = llmMatchResponse.data;
+      
+      // Refresh matches after LLM matching
+      await fetchMatches();
+      await fetchProjectDetections();
+      
+      // Update results
+      setVerificationResults(prev => ({
+        ...prev,
+        llmMatching,
+      }));
+      
+      updateAIStatus({
+        isRunning: false,
+        results: { llmMatching },
+      });
+      
+      return llmMatching;
+    } catch (err) {
+      updateAIStatus({
+        isRunning: false,
+        error: err.response?.data?.detail || err.message || 'Matching failed',
+      });
+      throw err;
+    }
+  }, [selectedProject, fetchMatches, fetchProjectDetections, updateAIStatus]);
+
+  // Run full pipeline: detect icons, detect labels, match with LLM
+  const runFullPipelineWithLLM = useCallback(async () => {
+    if (!selectedProject) return;
+    
+    try {
+      // Step 1: Detect icons
+      updateAIStatus({
+        isRunning: true,
+        currentStep: 1,
+        totalSteps: 6,
+        stepDescription: 'Detecting icons using template matching...',
+        results: null,
+        error: null,
+      });
+      
+      await api.detectIcons(selectedProject.id);
+      
+      // Step 2: Verify icons
+      updateAIStatus({
+        currentStep: 2,
+        stepDescription: 'AI Agent verifying icon detections...',
+      });
+      
+      const iconVerifyResponse = await api.verifyIconDetections(selectedProject.id);
+      const iconVerification = iconVerifyResponse.data;
+      
+      // Step 3: Detect labels
+      updateAIStatus({
+        currentStep: 3,
+        stepDescription: 'Detecting tags using template matching...',
+      });
+      
+      await api.detectLabels(selectedProject.id);
+      
+      // Step 4: Verify labels
+      updateAIStatus({
+        currentStep: 4,
+        stepDescription: 'AI Agent verifying tag detections...',
+      });
+      
+      const labelVerifyResponse = await api.verifyLabelDetections(selectedProject.id);
+      const labelVerification = labelVerifyResponse.data;
+      
+      // Step 5: Distance-based matching
+      updateAIStatus({
+        currentStep: 5,
+        stepDescription: 'Matching icons and tags by distance...',
+      });
+      
+      await api.matchIconsAndLabels(selectedProject.id);
+      
+      // Step 6: LLM matching for unmatched
+      updateAIStatus({
+        currentStep: 6,
+        stepDescription: 'AI Agent matching remaining unmatched items...',
+      });
+      
+      const llmMatchResponse = await api.llmMatchUnmatched(selectedProject.id);
+      const llmMatching = llmMatchResponse.data;
+      
+      // Refresh all data
+      await fetchProjectDetections();
+      await fetchMatches();
+      
+      // Update results
+      const results = {
+        iconVerification,
+        labelVerification,
+        llmMatching,
+      };
+      setVerificationResults(results);
+      
+      updateAIStatus({
+        isRunning: false,
+        results,
+      });
+      
+      return results;
+    } catch (err) {
+      updateAIStatus({
+        isRunning: false,
+        error: err.response?.data?.detail || err.message || 'Pipeline failed',
+      });
+      throw err;
+    }
+  }, [selectedProject, fetchProjectDetections, fetchMatches, updateAIStatus]);
+
   const value = {
     projects,
     selectedProject,
@@ -286,6 +556,15 @@ export const ProjectProvider = ({ children }) => {
     runDetectIcons,
     runDetectLabels,
     runMatchIconsLabels,
+    // AI verification
+    aiStatus,
+    verificationResults,
+    resetAIStatus,
+    dismissAIStatus,
+    runDetectIconsWithVerification,
+    runDetectLabelsWithVerification,
+    runMatchWithLLM,
+    runFullPipelineWithLLM,
   };
 
   return (

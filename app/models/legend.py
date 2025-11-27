@@ -48,8 +48,9 @@ class LegendItem(BaseModel):
     icon_template = relationship(
         "IconTemplate", uselist=False, back_populates="legend_item", cascade="all, delete"
     )
-    label_template = relationship(
-        "LabelTemplate", uselist=False, back_populates="legend_item", cascade="all, delete"
+    # One legend item can have multiple label templates (e.g., CF1, CF2, CF3 for same icon)
+    label_templates = relationship(
+        "LabelTemplate", back_populates="legend_item", cascade="all, delete"
     )
 
 

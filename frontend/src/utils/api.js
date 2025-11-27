@@ -36,8 +36,15 @@ export const api = {
   deleteIconDetection: (id) => axios.delete(`${API_BASE}/icons/detections/${id}`),
   
   // Labels
-  drawLabelBbox: (legendItemId, bbox) => axios.post(`${API_BASE}/labels/legend-items/${legendItemId}/draw-label-bbox`, bbox),
+  drawLabelBbox: (legendItemId, bbox, tagName = null, labelTemplateId = null) => 
+    axios.post(`${API_BASE}/labels/legend-items/${legendItemId}/draw-label-bbox`, {
+      ...bbox,
+      tag_name: tagName,
+      label_template_id: labelTemplateId,
+    }),
   getLabelTemplate: (legendItemId) => axios.get(`${API_BASE}/labels/legend-items/${legendItemId}/label-template`),
+  getLabelTemplates: (legendItemId) => axios.get(`${API_BASE}/labels/legend-items/${legendItemId}/label-templates`),
+  deleteLabelTemplate: (labelTemplateId) => axios.delete(`${API_BASE}/labels/label-templates/${labelTemplateId}`),
   createLabelTemplate: (legendItemId) => axios.post(`${API_BASE}/labels/legend-items/${legendItemId}/label-template`),
   detectLabels: (projectId) => axios.post(`${API_BASE}/labels/projects/${projectId}/detect-labels`),
   getLabelDetections: (params) => axios.get(`${API_BASE}/labels/detections`, { params }),
@@ -60,6 +67,20 @@ export const api = {
   // Detection settings
   getDetectionSettings: (projectId) => axios.get(`${API_BASE}/projects/${projectId}/detection-settings`),
   updateDetectionSettings: (projectId, data) => axios.put(`${API_BASE}/projects/${projectId}/detection-settings`, data),
+
+  // LLM Verification
+  verifyIconDetections: (projectId, batchSize = 10) => 
+    axios.post(`${API_BASE}/icons/projects/${projectId}/verify-icon-detections`, { batch_size: batchSize }),
+  verifyLabelDetections: (projectId, batchSize = 10) => 
+    axios.post(`${API_BASE}/labels/projects/${projectId}/verify-label-detections`, { batch_size: batchSize }),
+  
+  // LLM Matching for unmatched items
+  llmMatchUnmatched: (projectId) => 
+    axios.post(`${API_BASE}/icons/projects/${projectId}/llm-match-unmatched`),
+  
+  // Tag overlap resolution
+  resolveTagOverlaps: (projectId) => 
+    axios.post(`${API_BASE}/labels/projects/${projectId}/resolve-tag-overlaps`),
 };
 
 export default api;

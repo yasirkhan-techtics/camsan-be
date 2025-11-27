@@ -214,9 +214,10 @@ def delete_project(
                 if legend_item.icon_template.preprocessed_icon_url:
                     files_to_delete.append(legend_item.icon_template.preprocessed_icon_url)
             
-            if legend_item.label_template:
-                if legend_item.label_template.cropped_label_url:
-                    files_to_delete.append(legend_item.label_template.cropped_label_url)
+            # Handle multiple label templates per legend item
+            for label_template in legend_item.label_templates:
+                if label_template.cropped_label_url:
+                    files_to_delete.append(label_template.cropped_label_url)
     
     # Delete all individual files (handles old structure)
     print(f"   📋 Found {len(files_to_delete)} files to delete")

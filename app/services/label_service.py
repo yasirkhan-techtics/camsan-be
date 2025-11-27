@@ -24,8 +24,25 @@ class LabelService:
         self.db = db
         self.storage = storage_service
 
-    def save_label_bbox(self, legend_item_id: UUID, bbox: dict) -> LabelTemplate:
-        """Save a label template from user-drawn bounding box."""
+    def save_label_bbox(
+        self, 
+        legend_item_id: UUID, 
+        bbox: dict, 
+        tag_name: str = None,
+        label_template_id: UUID = None,
+    ) -> LabelTemplate:
+        """
+        Save a label template from user-drawn bounding box.
+        
+        Args:
+            legend_item_id: ID of the legend item
+            bbox: Bounding box dict with x, y, width, height
+            tag_name: Optional tag name (e.g., "CF1", "CF2")
+            label_template_id: Optional ID to update existing template
+        
+        Returns:
+            Created or updated LabelTemplate
+        """
         print(f"📋 [LABEL BBOX] Saving label bbox for legend item: {legend_item_id}")
         legend_item = (
             self.db.query(LegendItem)
@@ -54,15 +71,27 @@ class LabelService:
             int(bbox["height"]),
         )
 
-        # Check if label template already exists and delete old image
-        existing_template = (
+        # If updating existing template
+        existing_template = None
+        if label_template_id:
+            existing_template = (
+                self.db.query(LabelTemplate)
+                .filter(
+                    LabelTemplate.id == label_template_id,
+                    LabelTemplate.legend_item_id == legend_item_id
+                )
+                .first()
+            )
+            if existing_template and existing_template.cropped_label_url:
+                print(f"   🗑️ Deleting old label image: {existing_template.cropped_label_url}")
+                self.storage.delete_file(existing_template.cropped_label_url)
+
+        # Count existing templates to generate unique filename
+        template_count = (
             self.db.query(LabelTemplate)
             .filter(LabelTemplate.legend_item_id == legend_item_id)
-            .first()
+            .count()
         )
-        if existing_template and existing_template.cropped_label_url:
-            print(f"   🗑️ Deleting old label template: {existing_template.cropped_label_url}")
-            self.storage.delete_file(existing_template.cropped_label_url)
 
         print(f"   📐 Cropping label from bbox: x={x}, y={y}, w={width}, h={height}")
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -72,10 +101,12 @@ class LabelService:
             cropped_path = os.path.join(tmp_dir, "label.png")
             self._crop_image(table_path, cropped_path, (x, y, width, height))
 
+            # Use tag_name in filename if provided, otherwise use index
+            tag_suffix = tag_name if tag_name else f"tag_{template_count + 1}"
             upload_url = self.storage.upload_file(
                 local_path=cropped_path,
                 mime_type="image/png",
-                filename=f"{legend_item_id}_label.png",
+                filename=f"{legend_item_id}_label_{tag_suffix}.png",
                 project_name=project.name,
                 project_id=str(project.id),
             )
@@ -88,12 +119,44 @@ class LabelService:
 
         label_template.original_bbox = [x, y, width, height]
         label_template.cropped_label_url = upload_url
+        label_template.tag_name = tag_name
 
         self.db.add(label_template)
         self.db.commit()
         self.db.refresh(label_template)
-        print(f"   ✅ Label template saved!")
+        print(f"   ✅ Label template saved! (tag_name={tag_name})")
         return label_template
+
+    def delete_label_template(self, label_template_id: UUID) -> bool:
+        """Delete a specific label template."""
+        template = (
+            self.db.query(LabelTemplate)
+            .filter(LabelTemplate.id == label_template_id)
+            .first()
+        )
+        if not template:
+            raise HTTPException(status_code=404, detail="Label template not found.")
+
+        # Delete associated detections first
+        self.db.query(LabelDetection).filter(
+            LabelDetection.label_template_id == label_template_id
+        ).delete()
+
+        # Delete the image file
+        if template.cropped_label_url:
+            self.storage.delete_file(template.cropped_label_url)
+
+        self.db.delete(template)
+        self.db.commit()
+        return True
+
+    def get_label_templates(self, legend_item_id: UUID) -> List[LabelTemplate]:
+        """Get all label templates for a legend item."""
+        return (
+            self.db.query(LabelTemplate)
+            .filter(LabelTemplate.legend_item_id == legend_item_id)
+            .all()
+        )
 
     def create_label_template(self, legend_item_id: UUID) -> LabelTemplate:
         legend_item = (

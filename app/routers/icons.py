@@ -16,10 +16,19 @@ from schemas.detection import (
     IconLabelMatchResponse,
     IconTemplateBatchRequest,
     IconTemplateResponse,
+    LLMMatcherRequest,
+    LLMMatcherResponse,
+    LLMVerificationRequest,
+    LLMVerificationResponse,
     UpdateDetectionRequest,
 )
 from services.batch_service import BatchService, get_batch_service
 from services.icon_service import IconService, get_icon_service
+from services.llm_matcher_service import LLMMatcherService, get_llm_matcher_service
+from services.llm_verification_service import (
+    LLMVerificationService,
+    get_llm_verification_service,
+)
 from services.matching_service import MatchingService, get_matching_service
 from utils.state_manager import StateManager
 
@@ -277,5 +286,77 @@ def delete_icon_detection(
     
     db.delete(detection)
     db.commit()
+
+
+@router.post(
+    "/projects/{project_id}/verify-icon-detections",
+    response_model=LLMVerificationResponse,
+)
+def verify_icon_detections(
+    project_id: UUID,
+    payload: LLMVerificationRequest = None,
+    db: Session = Depends(get_db),
+    verification_service: LLMVerificationService = Depends(get_llm_verification_service),
+):
+    """
+    Verify icon detections using LLM.
+    
+    This endpoint:
+    1. Calculates dynamic confidence thresholds per icon type
+    2. Auto-approves high-confidence detections
+    3. Sends low-confidence detections to LLM for verification in batches
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    
+    batch_size = payload.batch_size if payload else 10
+    
+    print(f"🔍 [LLM VERIFY] Starting icon verification for project: {project_id}")
+    result = verification_service.verify_icon_detections(project, batch_size=batch_size)
+    print(f"✅ [LLM VERIFY] Verification complete!")
+    
+    return LLMVerificationResponse(
+        total_detections=result["total_detections"],
+        auto_approved=result["auto_approved"],
+        llm_approved=result["llm_approved"],
+        llm_rejected=result["llm_rejected"],
+        threshold_used=result["threshold_used"],
+    )
+
+
+@router.post(
+    "/projects/{project_id}/llm-match-unmatched",
+    response_model=LLMMatcherResponse,
+)
+def llm_match_unmatched(
+    project_id: UUID,
+    payload: LLMMatcherRequest = None,
+    db: Session = Depends(get_db),
+    matcher_service: LLMMatcherService = Depends(get_llm_matcher_service),
+):
+    """
+    Use LLM to match unmatched icons and unassigned tags.
+    
+    This endpoint should be called after distance-based matching to find
+    matches for icons/tags that couldn't be matched automatically.
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    
+    save_crops = payload.save_crops if payload else False
+    
+    print(f"🔍 [LLM MATCH] Starting LLM matching for project: {project_id}")
+    result = matcher_service.match_unmatched_items(project, save_crops=save_crops)
+    print(f"✅ [LLM MATCH] LLM matching complete!")
+    
+    return LLMMatcherResponse(
+        total_unmatched_icons=result["total_unmatched_icons"],
+        total_unassigned_tags=result["total_unassigned_tags"],
+        icons_matched=result["icons_matched"],
+        tags_matched=result["tags_matched"],
+        api_calls_made=result["api_calls_made"],
+    )
 
 

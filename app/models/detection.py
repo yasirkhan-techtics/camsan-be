@@ -5,6 +5,8 @@ from sqlalchemy.orm import relationship
 from models.base import BaseModel
 
 VERIFICATION_STATUSES = ("pending", "verified", "rejected")
+MATCH_METHODS = ("distance", "llm_matched")
+MATCH_STATUSES = ("matched", "unmatched_icon", "unassigned_tag")
 
 
 class IconTemplate(BaseModel):
@@ -28,11 +30,14 @@ class LabelTemplate(BaseModel):
     __tablename__ = "label_templates"
 
     legend_item_id = Column(
-        UUID(as_uuid=True), ForeignKey("legend_items.id"), nullable=False, unique=True
+        UUID(as_uuid=True), ForeignKey("legend_items.id"), nullable=False
     )
+    # Tag name/text for this label template (e.g., "CF1", "CF2")
+    tag_name = Column(Text, nullable=True)
+    original_bbox = Column(JSON, nullable=True)  # [x, y, w, h] - bbox in legend table
     cropped_label_url = Column(Text, nullable=False)
 
-    legend_item = relationship("LegendItem", back_populates="label_template")
+    legend_item = relationship("LegendItem", back_populates="label_templates")
     detections = relationship(
         "LabelDetection", back_populates="label_template", cascade="all, delete"
     )
@@ -93,6 +98,11 @@ class LabelDetection(BaseModel):
     confidence = Column(Float, nullable=False)
     scale = Column(Float, nullable=False)
     rotation = Column(Integer, nullable=False)
+    verification_status = Column(
+        Enum(*VERIFICATION_STATUSES, name="label_verification_status"),
+        default="pending",
+        nullable=False,
+    )
 
     label_template = relationship("LabelTemplate", back_populates="detections")
     page = relationship("PDFPage")
@@ -109,6 +119,16 @@ class IconLabelMatch(BaseModel):
     )
     distance = Column(Float, nullable=False)
     match_confidence = Column(Float, nullable=False)
+    match_method = Column(
+        Enum(*MATCH_METHODS, name="match_method"),
+        default="distance",
+        nullable=False,
+    )
+    match_status = Column(
+        Enum(*MATCH_STATUSES, name="match_status"),
+        default="matched",
+        nullable=False,
+    )
 
     icon_detection = relationship("IconDetection", lazy="joined")
     label_detection = relationship("LabelDetection", lazy="joined")

@@ -160,7 +160,7 @@ const PDFViewer = ({
   };
 
   return (
-    <div className="flex flex-col h-full bg-gray-100 overflow-hidden">
+    <div className="flex flex-col h-full bg-gray-100" style={{ overflow: 'hidden', maxWidth: '100%', maxHeight: '100%' }}>
       {/* Toolbar */}
       <div className="flex items-center justify-between p-4 bg-white border-b flex-shrink-0">
         <div className="flex items-center space-x-2">
@@ -183,24 +183,24 @@ const PDFViewer = ({
           </button>
         </div>
         
-        <div className="flex items-center space-x-2">
-          <button
-            onClick={() => setScale(s => Math.max(MIN_SCALE, Number((s - 0.1).toFixed(2))))}
-            className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded"
-          >
-            Zoom Out
-          </button>
-          <span className="text-sm">{Math.round(scale * 100)}%</span>
-          <button
-            onClick={() => setScale(s => Math.min(MAX_SCALE, Number((s + 0.1).toFixed(2))))}
-            className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded"
-          >
-            Zoom In
-          </button>
+        <div className="flex items-center space-x-3">
+          <span className="text-xs text-gray-500">🔍−</span>
+          <input
+            type="range"
+            min={MIN_SCALE * 100}
+            max={MAX_SCALE * 100}
+            value={scale * 100}
+            onChange={(e) => setScale(Number(e.target.value) / 100)}
+            className="w-32 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+            title={`Zoom: ${Math.round(scale * 100)}%`}
+          />
+          <span className="text-xs text-gray-500">🔍+</span>
+          <span className="text-sm font-medium w-12 text-center">{Math.round(scale * 100)}%</span>
           <button
             onClick={() => setScale(1.0)}
-            className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded"
+            className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded disabled:opacity-50"
             disabled={scale === 1.0}
+            title="Reset zoom to 100%"
           >
             Reset
           </button>
@@ -208,8 +208,17 @@ const PDFViewer = ({
       </div>
 
       {/* PDF Canvas - Fixed container with scroll */}
-      <div ref={containerRef} className="flex-1 overflow-auto bg-gray-50 p-4" style={{ minHeight: 0 }}>
-        <div className="inline-block min-w-full">
+      <div 
+        ref={containerRef} 
+        className="flex-1 bg-gray-50 p-4" 
+        style={{ 
+          minHeight: 0, 
+          overflow: 'auto',
+          maxWidth: '100%',
+          maxHeight: '100%'
+        }}
+      >
+        <div style={{ display: 'inline-block' }}>
           <Document
             file={pdfUrl}
             onLoadSuccess={onDocumentLoadSuccess}
@@ -218,11 +227,14 @@ const PDFViewer = ({
           >
             <div
               ref={pageRef}
-              className="relative inline-block"
+              className="relative"
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
-              style={{ cursor: createMode ? 'crosshair' : 'default' }}
+              style={{ 
+                cursor: createMode ? 'crosshair' : 'default',
+                display: 'inline-block'
+              }}
             >
               <Page
                 pageNumber={pageNumber}

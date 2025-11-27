@@ -66,3 +66,43 @@ class BatchVerificationResponse(BaseModel):
     results: List[BatchVerificationItem]
 
 
+# LLM Detection Verification Schemas
+class DetectionVerificationItem(BaseModel):
+    serial_number: int = Field(..., description="Serial number in the verification table")
+    is_valid: bool = Field(..., description="Whether the detection is valid")
+
+
+class DetectionVerificationResponse(BaseModel):
+    results: List[DetectionVerificationItem] = Field(
+        ..., description="List of verification results for each detection"
+    )
+
+
+# Tag Overlap Resolution Schemas
+class TagOverlapClassification(BaseModel):
+    sr_no: int = Field(..., description="Serial number of the overlapping pair")
+    selected_tag: str = Field(..., description="The tag name that should be kept")
+    confidence: str = Field(default="medium", description="Confidence level: high/medium/low")
+
+
+class TagOverlapResolutionLLMResponse(BaseModel):
+    classifications: List[TagOverlapClassification] = Field(
+        ..., description="List of classifications for each overlapping pair"
+    )
+
+
+# LLM Matcher Schemas
+class IconMatchResult(BaseModel):
+    match_found: bool = Field(..., description="Whether a matching tag was found")
+    matched_tag: Optional[str] = Field(None, description="Name of the matched tag")
+    confidence: str = Field(default="low", description="Confidence level: high/medium/low")
+    reasoning: str = Field(default="", description="Brief explanation for the match")
+
+
+class TagMatchResult(BaseModel):
+    match_found: bool = Field(..., description="Whether a matching icon was found")
+    matched_icon_type: Optional[str] = Field(None, description="Type of the matched icon")
+    confidence: str = Field(default="low", description="Confidence level: high/medium/low")
+    reasoning: str = Field(default="", description="Brief explanation for the match")
+
+

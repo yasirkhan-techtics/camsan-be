@@ -21,12 +21,15 @@ const LegendItemsSection = () => {
   const [isSelectingLabel, setIsSelectingLabel] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [isSearchingAll, setIsSearchingAll] = useState(false);
+  const [searchStatus, setSearchStatus] = useState(''); // Current step status message
   const [searchIcons, setSearchIcons] = useState(true);
   const [searchLabels, setSearchLabels] = useState(true);
   const [iconTemplate, setIconTemplate] = useState(null);
-  const [labelTemplate, setLabelTemplate] = useState(null);
+  const [labelTemplates, setLabelTemplates] = useState([]); // Multiple label templates per item
   const [showTemplateSelector, setShowTemplateSelector] = useState(null); // 'icon' or 'label'
   const [tempBbox, setTempBbox] = useState(null); // Temporary bbox while drawing
+  const [newTagName, setNewTagName] = useState(''); // Tag name for new label template
+  const [editingLabelTemplateId, setEditingLabelTemplateId] = useState(null); // ID of template being edited
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawStart, setDrawStart] = useState(null);
   const [imageZoom, setImageZoom] = useState(1.0);
@@ -107,12 +110,12 @@ const LegendItemsSection = () => {
       setIconTemplate(null); // No icon template yet
     }
     
-    // Try to load label template for this item
+    // Try to load all label templates for this item (supports multiple tags)
     try {
-      const response = await api.getLabelTemplate(item.id);
-      setLabelTemplate(response.data);
+      const response = await api.getLabelTemplates(item.id);
+      setLabelTemplates(response.data || []);
     } catch (error) {
-      setLabelTemplate(null); // No label template yet
+      setLabelTemplates([]); // No label templates yet
     }
     
     // Optionally scroll to the legend table page
@@ -156,10 +159,12 @@ const LegendItemsSection = () => {
     setImageZoom(1.0);
   };
 
-  const handleSelectLabel = () => {
+  const handleSelectLabel = (templateId = null) => {
     setShowTemplateSelector('label');
     setTempBbox(null);
     setImageZoom(1.0);
+    setEditingLabelTemplateId(templateId);
+    setNewTagName('');
   };
 
   const handleSaveIconTemplate = async () => {
@@ -194,14 +199,47 @@ const LegendItemsSection = () => {
     
     try {
       console.log('📝 Saving label bbox directly from legend table image:', tempBbox);
-      const response = await api.drawLabelBbox(selectedItemId, tempBbox);
-      setLabelTemplate(response.data);
+      const response = await api.drawLabelBbox(
+        selectedItemId, 
+        tempBbox, 
+        newTagName || null, 
+        editingLabelTemplateId
+      );
+      
+      // Update the label templates list
+      if (editingLabelTemplateId) {
+        // Update existing template in the list
+        setLabelTemplates(prev => prev.map(t => 
+          t.id === editingLabelTemplateId ? response.data : t
+        ));
+      } else {
+        // Add new template to the list
+        setLabelTemplates(prev => [...prev, response.data]);
+      }
+      
       setShowTemplateSelector(null);
       setTempBbox(null);
-      alert('Label template saved successfully!');
+      setNewTagName('');
+      setEditingLabelTemplateId(null);
+      alert(`Label template ${editingLabelTemplateId ? 'updated' : 'saved'} successfully!`);
     } catch (error) {
       console.error('Error saving label bbox:', error);
       alert('Error saving label: ' + (error.response?.data?.detail || error.message));
+    }
+  };
+
+  const handleDeleteLabelTemplate = async (templateId) => {
+    if (!window.confirm('Delete this tag template? This will also delete all detections for this tag.')) {
+      return;
+    }
+    
+    try {
+      await api.deleteLabelTemplate(templateId);
+      setLabelTemplates(prev => prev.filter(t => t.id !== templateId));
+      alert('Tag template deleted successfully!');
+    } catch (error) {
+      console.error('Error deleting label template:', error);
+      alert('Error deleting tag: ' + (error.response?.data?.detail || error.message));
     }
   };
 
@@ -406,67 +444,132 @@ const LegendItemsSection = () => {
     console.log('Legend Item ID:', selectedItemId);
     console.log('Search options:', { searchIcons, searchLabels });
     setIsSearching(true);
+    setSearchStatus('Initializing search...');
     
     let iconCount = 0;
     let labelCount = 0;
+    let verificationResults = { icons: null, labels: null };
     
     try {
+      // Refresh templates from server to ensure we have latest state
+      let currentIconTemplate = iconTemplate;
+      let currentLabelTemplates = labelTemplates;
+      
+      try {
+        const iconResponse = await api.getIconTemplate(selectedItemId);
+        currentIconTemplate = iconResponse.data;
+        setIconTemplate(currentIconTemplate);
+      } catch (e) {
+        currentIconTemplate = null;
+        setIconTemplate(null);
+      }
+      
+      try {
+        const labelResponse = await api.getLabelTemplates(selectedItemId);
+        currentLabelTemplates = labelResponse.data || [];
+        setLabelTemplates(currentLabelTemplates);
+      } catch (e) {
+        currentLabelTemplates = [];
+        setLabelTemplates([]);
+      }
+      
       // Search for icons if enabled
-      if (searchIcons && iconTemplate) {
+      if (searchIcons && currentIconTemplate) {
         // STEP 1: Preprocess icon template if needed
-        if (!iconTemplate.preprocessed_icon_url) {
+        if (!currentIconTemplate.preprocessed_icon_url) {
+          setSearchStatus('Preprocessing icon template...');
           console.log('🔧 Preprocessing icon template...');
           const preprocessResponse = await api.preprocessIcon(selectedItemId);
           console.log('✅ Icon preprocessed:', preprocessResponse.data);
-          setIconTemplate(preprocessResponse.data);
+          currentIconTemplate = preprocessResponse.data;
+          setIconTemplate(currentIconTemplate);
         } else {
           console.log('✅ Icon already preprocessed');
         }
 
         // STEP 2: Search for icons
+        setSearchStatus('Detecting icons across all pages...');
         console.log('🔎 Detecting icons across all pages...');
         const iconDetectResponse = await api.detectIcons(selectedProject.id);
-        console.log(`✅ Icon detection complete! Found ${iconDetectResponse.data?.length || 0} total icons`);
+        iconCount = iconDetectResponse.data?.length || 0;
+        console.log(`✅ Icon detection complete! Found ${iconCount} total icons`);
         
-        // Load icon detections for this item
-        const currentIconDetections = await api.getIconDetections({ legend_item_id: selectedItemId });
-        iconCount = currentIconDetections.data?.length || 0;
-        console.log(`✅ ${iconCount} icon detection(s) for this legend item`);
-      } else if (searchIcons && !iconTemplate) {
+        // STEP 3: LLM Verification for icons
+        if (iconCount > 0) {
+          setSearchStatus(`Verifying ${iconCount} icons with AI (calculating thresholds)...`);
+          console.log('🤖 Starting AI verification for icons...');
+          try {
+            const verifyResponse = await api.verifyIconDetections(selectedProject.id);
+            verificationResults.icons = verifyResponse.data;
+            console.log('✅ Icon verification complete:', verifyResponse.data);
+          } catch (verifyError) {
+            console.warn('⚠️ Icon verification failed:', verifyError.message);
+          }
+        }
+      } else if (searchIcons && !currentIconTemplate) {
         console.log('⚠️ Icon search enabled but no icon template defined');
       }
       
       // Search for labels if enabled
-      if (searchLabels && labelTemplate) {
-        console.log('🔎 Detecting labels across all pages...');
+      if (searchLabels && currentLabelTemplates.length > 0) {
+        setSearchStatus(`Detecting labels across all pages (${currentLabelTemplates.length} tag templates)...`);
+        console.log(`🔎 Detecting labels across all pages (${currentLabelTemplates.length} tag templates)...`);
         const labelDetectResponse = await api.detectLabels(selectedProject.id);
-        console.log(`✅ Label detection complete! Found ${labelDetectResponse.data?.length || 0} total labels`);
+        labelCount = labelDetectResponse.data?.length || 0;
+        console.log(`✅ Label detection complete! Found ${labelCount} total labels`);
         
-        // Load label detections for this item
-        const currentLabelDetections = await api.getLabelDetections({ legend_item_id: selectedItemId });
-        labelCount = currentLabelDetections.data?.length || 0;
-        console.log(`✅ ${labelCount} label detection(s) for this legend item`);
-      } else if (searchLabels && !labelTemplate) {
-        console.log('ℹ️ Label search enabled but no label template defined');
+        // STEP 4: LLM Verification for labels
+        if (labelCount > 0) {
+          setSearchStatus(`Verifying ${labelCount} labels with AI (calculating thresholds)...`);
+          console.log('🤖 Starting AI verification for labels...');
+          try {
+            const verifyResponse = await api.verifyLabelDetections(selectedProject.id);
+            verificationResults.labels = verifyResponse.data;
+            console.log('✅ Label verification complete:', verifyResponse.data);
+          } catch (verifyError) {
+            console.warn('⚠️ Label verification failed:', verifyError.message);
+          }
+        }
+      } else if (searchLabels && currentLabelTemplates.length === 0) {
+        console.log('ℹ️ Label search enabled but no label templates defined');
       }
 
       // Refresh all detections
+      setSearchStatus('Refreshing detections...');
       await fetchDetections(selectedItemId);
 
-      // Show summary
+      // Build summary message
       const results = [];
-      if (searchIcons) results.push(`Icons: ${iconCount}`);
-      if (searchLabels) results.push(`Labels: ${labelCount}`);
-      alert(`Search complete!\n\n${results.join('\n')}\n\nCheck the PDF for highlighted detections.`);
+      if (searchIcons) {
+        let iconMsg = `Icons: ${iconCount} detected`;
+        if (verificationResults.icons) {
+          const v = verificationResults.icons;
+          iconMsg += ` → ${v.auto_approved} auto-approved, ${v.llm_approved} AI-approved, ${v.llm_rejected} rejected`;
+        }
+        results.push(iconMsg);
+      }
+      if (searchLabels) {
+        let labelMsg = `Labels: ${labelCount} detected`;
+        if (verificationResults.labels) {
+          const v = verificationResults.labels;
+          labelMsg += ` → ${v.auto_approved} auto-approved, ${v.llm_approved} AI-approved, ${v.llm_rejected} rejected`;
+        }
+        results.push(labelMsg);
+      }
+      
+      setSearchStatus('');
+      alert(`Search & Verification Complete!\n\n${results.join('\n')}\n\nCheck the PDF for highlighted detections.`);
 
       console.log('✅ ========== SEARCH COMPLETED ==========');
     } catch (error) {
       console.error('❌ ========== SEARCH FAILED ==========');
       console.error('Error:', error);
       console.error('Error details:', error.response?.data);
+      setSearchStatus('');
       alert('Error searching: ' + (error.response?.data?.detail || error.message));
     } finally {
       setIsSearching(false);
+      setSearchStatus('');
     }
   };
 
@@ -494,7 +597,7 @@ const LegendItemsSection = () => {
       return;
     }
     
-    const confirmMsg = `This will search for icons and labels across all pages for ${itemsWithIconTemplate.length} legend item(s) with templates.\n\nThis may take a while. Continue?`;
+    const confirmMsg = `This will search for icons and labels across all pages for ${itemsWithIconTemplate.length} legend item(s) with templates.\n\nThis includes AI verification of results. Continue?`;
     if (!window.confirm(confirmMsg)) {
       return;
     }
@@ -503,9 +606,15 @@ const LegendItemsSection = () => {
     console.log(`Project ID: ${selectedProject.id}`);
     console.log(`Items with templates: ${itemsWithIconTemplate.length}`);
     setIsSearchingAll(true);
+    setSearchStatus('Starting full search...');
+    
+    let iconCount = 0;
+    let labelCount = 0;
+    let verificationResults = { icons: null, labels: null };
     
     try {
       // STEP 1: Preprocess all icon templates
+      setSearchStatus('Step 1/6: Preprocessing icon templates...');
       console.log('🔧 STEP 1: Preprocessing all icon templates...');
       for (const item of itemsWithIconTemplate) {
         try {
@@ -521,33 +630,87 @@ const LegendItemsSection = () => {
       console.log('✅ All icon templates preprocessed');
 
       // STEP 2: Detect all icons
+      setSearchStatus('Step 2/6: Detecting icons across all pages...');
       console.log('🔎 STEP 2: Detecting all icons across all pages...');
       const iconDetectResponse = await api.detectIcons(selectedProject.id);
-      console.log(`✅ Icon detection complete! Found ${iconDetectResponse.data?.length || 0} total icons`);
+      iconCount = iconDetectResponse.data?.length || 0;
+      console.log(`✅ Icon detection complete! Found ${iconCount} total icons`);
 
-      // STEP 3: Detect all labels
-      console.log('🔎 STEP 3: Detecting all labels across all pages...');
+      // STEP 3: AI Verification for icons
+      if (iconCount > 0) {
+        setSearchStatus(`Step 3/6: AI verifying ${iconCount} icons...`);
+        console.log('🤖 STEP 3: AI verification for icons...');
+        try {
+          const verifyResponse = await api.verifyIconDetections(selectedProject.id);
+          verificationResults.icons = verifyResponse.data;
+          console.log('✅ Icon verification complete:', verifyResponse.data);
+        } catch (verifyError) {
+          console.warn('⚠️ Icon verification failed:', verifyError.message);
+        }
+      }
+
+      // STEP 4: Detect all labels
+      setSearchStatus('Step 4/6: Detecting labels across all pages...');
+      console.log('🔎 STEP 4: Detecting all labels across all pages...');
       try {
         const labelDetectResponse = await api.detectLabels(selectedProject.id);
-        console.log(`✅ Label detection complete! Found ${labelDetectResponse.data?.length || 0} total labels`);
+        labelCount = labelDetectResponse.data?.length || 0;
+        console.log(`✅ Label detection complete! Found ${labelCount} total labels`);
       } catch (error) {
         console.warn('⚠️ Label detection skipped or failed:', error.message);
       }
 
-      // Refresh detections if an item is selected
+      // STEP 5: AI Verification for labels
+      if (labelCount > 0) {
+        setSearchStatus(`Step 5/6: AI verifying ${labelCount} labels...`);
+        console.log('🤖 STEP 5: AI verification for labels...');
+        try {
+          const verifyResponse = await api.verifyLabelDetections(selectedProject.id);
+          verificationResults.labels = verifyResponse.data;
+          console.log('✅ Label verification complete:', verifyResponse.data);
+        } catch (verifyError) {
+          console.warn('⚠️ Label verification failed:', verifyError.message);
+        }
+      }
+
+      // STEP 6: Refresh detections
+      setSearchStatus('Step 6/6: Refreshing results...');
       if (selectedItemId) {
         await fetchDetections(selectedItemId);
       }
 
+      // Build summary
+      const results = [];
+      let iconMsg = `Icons: ${iconCount} detected`;
+      if (verificationResults.icons) {
+        const v = verificationResults.icons;
+        iconMsg += `\n  → ${v.auto_approved} auto-approved (high confidence)`;
+        iconMsg += `\n  → ${v.llm_approved} AI-approved (verified by LLM)`;
+        iconMsg += `\n  → ${v.llm_rejected} rejected`;
+      }
+      results.push(iconMsg);
+      
+      let labelMsg = `Labels: ${labelCount} detected`;
+      if (verificationResults.labels) {
+        const v = verificationResults.labels;
+        labelMsg += `\n  → ${v.auto_approved} auto-approved (high confidence)`;
+        labelMsg += `\n  → ${v.llm_approved} AI-approved (verified by LLM)`;
+        labelMsg += `\n  → ${v.llm_rejected} rejected`;
+      }
+      results.push(labelMsg);
+
       console.log('✅ ========== SEARCH ALL COMPLETED ==========');
-      alert(`Search complete!\n\nIcons found: ${iconDetectResponse.data?.length || 0}\n\nSelect a legend item to view its detections.`);
+      setSearchStatus('');
+      alert(`Search & AI Verification Complete!\n\n${results.join('\n\n')}\n\nSelect a legend item to view its detections.`);
     } catch (error) {
       console.error('❌ ========== SEARCH ALL FAILED ==========');
       console.error('Error:', error);
       console.error('Error details:', error.response?.data);
+      setSearchStatus('');
       alert('Error searching: ' + (error.response?.data?.detail || error.message));
     } finally {
       setIsSearchingAll(false);
+      setSearchStatus('');
     }
   };
 
@@ -557,13 +720,20 @@ const LegendItemsSection = () => {
       <div className="flex-1 min-w-0 flex flex-col">
         
         {(isSearching || isSearchingAll) && (
-          <div className="p-3 bg-yellow-100 border-b">
-            <div className="flex items-center justify-center space-x-2">
-              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-yellow-800"></div>
-              <div className="text-sm font-medium text-yellow-800">
-                🔍 {isSearchingAll ? 'Searching all legend items...' : 'Searching for icons and labels...'} (Check console for progress)
+          <div className="p-3 bg-gradient-to-r from-indigo-100 to-purple-100 border-b border-indigo-200">
+            <div className="flex items-center justify-center space-x-3">
+              <div className="relative">
+                <div className="animate-spin rounded-full h-5 w-5 border-2 border-indigo-300 border-t-indigo-600"></div>
+              </div>
+              <div className="text-sm font-medium text-indigo-800">
+                {searchStatus || (isSearchingAll ? '🔍 Searching all legend items...' : '🔍 Searching for icons and labels...')}
               </div>
             </div>
+            {searchStatus && searchStatus.includes('AI') && (
+              <div className="mt-2 text-xs text-center text-indigo-600">
+                🤖 AI is calculating confidence thresholds and verifying low-confidence detections...
+              </div>
+            )}
           </div>
         )}
         
@@ -664,17 +834,51 @@ const LegendItemsSection = () => {
               )}
             </div>
             
-            {/* Label Template Status */}
+            {/* Label Templates Status - Supports Multiple Tags */}
             <div>
-              <div className="text-xs font-medium text-gray-700 mb-1">Label/Tag Template</div>
-              {labelTemplate ? (
-                <div className="text-xs text-green-600 p-2 bg-green-50 rounded flex items-center">
-                  <span className="mr-2">✓</span>
-                  <span>Label saved</span>
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-xs font-medium text-gray-700">Label/Tag Templates</div>
+                <span className="text-xs text-gray-500">({labelTemplates.length} tags)</span>
+              </div>
+              {labelTemplates.length > 0 ? (
+                <div className="space-y-1">
+                  {labelTemplates.map((template, index) => (
+                    <div 
+                      key={template.id} 
+                      className="text-xs text-green-600 p-2 bg-green-50 rounded flex items-center justify-between group"
+                    >
+                      <div className="flex items-center">
+                        <span className="mr-2">✓</span>
+                        <span>{template.tag_name || `Tag ${index + 1}`}</span>
+                      </div>
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSelectLabel(template.id);
+                          }}
+                          className="text-blue-600 hover:text-blue-800 p-1"
+                          title="Edit tag"
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteLabelTemplate(template.id);
+                          }}
+                          className="text-red-600 hover:text-red-800 p-1"
+                          title="Delete tag"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ) : (
                 <div className="text-xs text-gray-500 p-2 bg-gray-100 rounded">
-                  Not selected yet
+                  No tags selected yet
                 </div>
               )}
             </div>
@@ -688,12 +892,12 @@ const LegendItemsSection = () => {
                 {iconTemplate ? '🔄 Update Icon' : '➕ Select Icon'}
               </button>
               
-              {/* Select Label Button */}
+              {/* Add Label/Tag Button */}
               <button
-                onClick={handleSelectLabel}
+                onClick={() => handleSelectLabel()}
                 className="w-full py-2 px-4 bg-purple-500 text-white rounded hover:bg-purple-600 disabled:opacity-50 text-sm"
               >
-                {labelTemplate ? '🔄 Update Label' : '➕ Select Label/Tag'}
+                ➕ Add Label/Tag
               </button>
               
               {/* Instruction */}
@@ -731,7 +935,7 @@ const LegendItemsSection = () => {
               {/* Search Button */}
               <button
                 onClick={handleSearchItem}
-                disabled={(!iconTemplate && !labelTemplate) || isSearching || (!searchIcons && !searchLabels)}
+                disabled={(!iconTemplate && labelTemplates.length === 0) || isSearching || (!searchIcons && !searchLabels)}
                 className="w-full py-2 px-4 bg-green-500 text-white rounded hover:bg-green-600 disabled:opacity-50 text-sm font-semibold"
               >
                 {isSearching ? '🔍 Searching...' : '🔍 Search & Detect'}
@@ -739,6 +943,9 @@ const LegendItemsSection = () => {
               
               <div className="text-xs text-gray-500 italic pt-1">
                 * At least one template and option required.
+              </div>
+              <div className="text-xs text-amber-600 bg-amber-50 p-2 rounded mt-2">
+                ⚠️ <strong>Note:</strong> Detection uses project-wide settings. If you get too many false matches, increase the threshold in Detection Settings.
               </div>
             </div>
           </div>
@@ -786,11 +993,26 @@ const LegendItemsSection = () => {
           <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
             <div className="p-4 border-b bg-gray-50">
               <h2 className="text-lg font-semibold">
-                {showTemplateSelector === 'icon' ? '🎯 Select Icon Template' : '📝 Select Label Template'}
+                {showTemplateSelector === 'icon' ? '🎯 Select Icon Template' : '📝 Select Label/Tag Template'}
               </h2>
               <p className="text-sm text-gray-600 mt-1">
                 Draw a tight bounding box around ONLY the {showTemplateSelector} (no whitespace)
               </p>
+              {showTemplateSelector === 'label' && (
+                <div className="mt-3">
+                  <label className="text-sm font-medium text-gray-700">Tag Name (e.g., CF1, CF2)</label>
+                  <input
+                    type="text"
+                    value={newTagName}
+                    onChange={(e) => setNewTagName(e.target.value)}
+                    placeholder="Enter tag name..."
+                    className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-purple-500 focus:border-purple-500"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    💡 This helps identify different tags for the same icon (e.g., CF1, CF2, CF3)
+                  </p>
+                </div>
+              )}
             </div>
             
             <div className="flex-1 overflow-auto p-6 bg-gray-100">
