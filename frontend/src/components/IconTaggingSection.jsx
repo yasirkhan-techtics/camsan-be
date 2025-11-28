@@ -50,6 +50,7 @@ const IconTaggingSection = () => {
   const [selectedLegendItemId, setSelectedLegendItemId] = useState(null);
   const [showAllMatchesOnPdf, setShowAllMatchesOnPdf] = useState(false); // Render all matches on PDF at once
   const [visibleMatchIds, setVisibleMatchIds] = useState(new Set()); // Which individual matches to show on PDF
+  const [scrollToBbox, setScrollToBbox] = useState(null); // For scrolling PDF to center on a bbox
 
   // Aggregate all legend items from all legend tables
   const legendItems = useMemo(() => {
@@ -505,6 +506,7 @@ const IconTaggingSection = () => {
                   : null
               }
               scrollToPage={scrollToPage}
+              scrollToBbox={scrollToBbox}
               isEditable={false}
               createMode={false}
             />
@@ -691,13 +693,34 @@ const IconTaggingSection = () => {
                         ? legendItemColors.get(iconLegendItemId) || fallbackColors[matchIndex % fallbackColors.length]
                         : fallbackColors[matchIndex % fallbackColors.length];
                       
-                      // When showAllMatchesOnPdf is enabled, clicking toggles visibility
-                      // Otherwise, clicking selects the match
+                      // Scroll to the match location
+                      const scrollToMatch = () => {
+                        const targetBbox = match.icon?.bbox_normalized || match.label?.bbox_normalized;
+                        if (targetBbox) {
+                          // Include timestamp to force re-trigger even for same bbox
+                          setScrollToBbox({
+                            bbox_normalized: targetBbox,
+                            page_number: match.page_number,
+                            _ts: Date.now()
+                          });
+                        }
+                      };
+                      
+                      // When showAllMatchesOnPdf is enabled, clicking toggles visibility AND scrolls
+                      // Otherwise, clicking selects the match and scrolls to it
                       const handleCardClick = () => {
                         if (showAllMatchesOnPdf) {
+                          // Toggle visibility and scroll to the match
                           toggleMatchVisibility(match.id);
+                          scrollToMatch();
                         } else {
-                          setSelectedMatchId(isSelected ? null : match.id);
+                          if (isSelected) {
+                            setSelectedMatchId(null);
+                            setScrollToBbox(null);
+                          } else {
+                            setSelectedMatchId(match.id);
+                            scrollToMatch();
+                          }
                         }
                       };
                       

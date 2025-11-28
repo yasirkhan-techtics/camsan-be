@@ -37,6 +37,7 @@ class Settings(BaseSettings):
         
         env_file_encoding = "utf-8"
         case_sensitive = False
+        extra = "ignore"  # Allow extra env vars like LANGCHAIN_* for LangSmith
 
 
 @lru_cache()

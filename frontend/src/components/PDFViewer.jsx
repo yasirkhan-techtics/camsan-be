@@ -15,6 +15,7 @@ const PDFViewer = ({
   onBboxDelete,
   onBboxSelect,
   scrollToPage = null,
+  scrollToBbox = null, // { bbox_normalized: [x, y, w, h], page_number: number }
   isEditable = false,
   createMode = false
 }) => {
@@ -38,6 +39,67 @@ const PDFViewer = ({
       setPageNumber(scrollToPage);
     }
   }, [scrollToPage]);
+
+  // Scroll to center the bbox in the viewer
+  useEffect(() => {
+    if (!scrollToBbox || !containerRef.current || !pageRef.current) return;
+    
+    // First, navigate to the correct page if needed
+    if (scrollToBbox.page_number && scrollToBbox.page_number !== pageNumber) {
+      setPageNumber(scrollToBbox.page_number);
+      // Wait for page to render before scrolling - will re-trigger when pageNumber changes
+      return;
+    }
+    
+    // Use a small delay to ensure the page has rendered after page change
+    const scrollTimeout = setTimeout(() => {
+      const container = containerRef.current;
+      const pageElement = pageRef.current;
+      if (!container || !pageElement) return;
+      
+      // Get the actual canvas element inside the page
+      const canvas = pageElement.querySelector('canvas');
+      if (!canvas) return;
+      
+      // Get canvas dimensions (the actual rendered PDF page size)
+      const canvasRect = canvas.getBoundingClientRect();
+      const canvasWidth = canvasRect.width;
+      const canvasHeight = canvasRect.height;
+      
+      // bbox_normalized format is [ymin, xmin, ymax, xmax] in 0-1000 scale
+      const [ymin, xmin, ymax, xmax] = scrollToBbox.bbox_normalized;
+      
+      // Calculate center of bbox in pixel coordinates
+      const bboxCenterXInCanvas = ((xmin + xmax) / 2 / 1000) * canvasWidth;
+      const bboxCenterYInCanvas = ((ymin + ymax) / 2 / 1000) * canvasHeight;
+      
+      // Get canvas position relative to container's scroll area
+      const containerRect = container.getBoundingClientRect();
+      const canvasOffsetX = canvasRect.left - containerRect.left + container.scrollLeft;
+      const canvasOffsetY = canvasRect.top - containerRect.top + container.scrollTop;
+      
+      // Calculate absolute position of bbox center in the scroll container
+      const bboxAbsoluteX = canvasOffsetX + bboxCenterXInCanvas;
+      const bboxAbsoluteY = canvasOffsetY + bboxCenterYInCanvas;
+      
+      // Get container visible dimensions
+      const containerWidth = container.clientWidth;
+      const containerHeight = container.clientHeight;
+      
+      // Calculate scroll position to center the bbox
+      const scrollX = bboxAbsoluteX - containerWidth / 2;
+      const scrollY = bboxAbsoluteY - containerHeight / 2;
+      
+      // Smooth scroll to the position
+      container.scrollTo({
+        left: Math.max(0, scrollX),
+        top: Math.max(0, scrollY),
+        behavior: 'smooth'
+      });
+    }, 200); // Delay to ensure rendering is complete
+    
+    return () => clearTimeout(scrollTimeout);
+  }, [scrollToBbox, pageNumber]);
 
   useEffect(() => {
     const updateBaseWidth = () => {
