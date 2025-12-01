@@ -75,6 +75,54 @@ class LLMService:
         structured_model = model.with_structured_output(response_model)
         return structured_model.invoke(messages)
 
+    def _invoke_with_template_comparison(
+        self, instructions: str, template_image_path: str, detected_image_path: str, response_model: Type[T]
+    ) -> T:
+        """
+        Invoke LLM with two images for template comparison.
+        
+        Args:
+            instructions: The prompt/instructions for the LLM
+            template_image_path: Path to the template image
+            detected_image_path: Path to the detected/cropped image
+            response_model: Pydantic model for structured output
+            
+        Returns:
+            Structured response from LLM
+        """
+        messages = self._build_template_comparison_messages(
+            instructions, template_image_path, detected_image_path, response_model
+        )
+        model = self._get_model()
+        structured_model = model.with_structured_output(response_model)
+        return structured_model.invoke(messages)
+
+    def _build_template_comparison_messages(
+        self, instructions: str, template_image_path: str, detected_image_path: str, response_model: Type[BaseModel]
+    ) -> list[BaseMessage]:
+        """Build messages for template comparison with two images."""
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You are a vision assistant that compares symbols in electrical drawings. "
+                    "You will be shown a TEMPLATE image and a DETECTED image. "
+                    "Follow the instructions carefully and return data in the specified format.",
+                ),
+                (
+                    "human",
+                    [
+                        {"type": "text", "text": "TEMPLATE IMAGE:"},
+                        self._image_content(template_image_path),
+                        {"type": "text", "text": "DETECTED IMAGE:"},
+                        self._image_content(detected_image_path),
+                        {"type": "text", "text": "{instructions}"},
+                    ],
+                ),
+            ]
+        )
+        return prompt.format_messages(instructions=instructions)
+
     def _build_multimodal_messages(
         self, instructions: str, image_path: str, response_model: Type[BaseModel]
     ) -> list[BaseMessage]:

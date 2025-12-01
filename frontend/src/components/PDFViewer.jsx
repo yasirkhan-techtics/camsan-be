@@ -331,6 +331,7 @@ const PDFViewer = ({
                       onDelete={onBboxDelete ? () => onBboxDelete(box.id) : undefined}
                       onSelect={() => onBboxSelect && onBboxSelect(box.id)}
                       score={box.confidence}
+                      label={box.label}
                     />
                   );
                 })}

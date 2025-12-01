@@ -147,11 +147,13 @@ const IconTaggingSection = () => {
       const label = match.label_detection_id
         ? labelMap.get(match.label_detection_id)
         : null;
+      // For AI-matched icons, consider them matched if they have llm_assigned_label
+      const isMatched = Boolean(label) || Boolean(match.llm_assigned_label);
       return {
         ...match,
         icon,
         label,
-        isMatched: Boolean(label),
+        isMatched,
         page_number: icon?.page_number || label?.page_number || 1,
       };
     });
@@ -209,12 +211,17 @@ const IconTaggingSection = () => {
           : `hsl(${(index * 37) % 360}, 70%, 50%)`;
         
         if (showIcons && match.icon) {
+          // For AI-matched icons, show the llm_assigned_label on the box
+          const iconLabel = match.match_method === 'llm_matched' && match.llm_assigned_label
+            ? match.llm_assigned_label
+            : null;
           boxes.push({
             id: `icon-${match.icon.id}`,
             bbox_normalized: match.icon.bbox_normalized,
             page_number: match.icon.page_number,
             color: selectedMatchId === match.id ? '#ff0000' : matchColor,
             confidence: match.icon.confidence,
+            label: iconLabel, // Display LLM-assigned label on the box
           });
         }
         if (showLabels && match.label) {
@@ -233,12 +240,17 @@ const IconTaggingSection = () => {
     // Show only selected match
     if (selectedMatch) {
       if (showIcons && selectedMatch.icon) {
+        // For AI-matched icons, show the llm_assigned_label on the box
+        const iconLabel = selectedMatch.match_method === 'llm_matched' && selectedMatch.llm_assigned_label
+          ? selectedMatch.llm_assigned_label
+          : null;
         boxes.push({
           id: `icon-${selectedMatch.icon.id}`,
           bbox_normalized: selectedMatch.icon.bbox_normalized,
           page_number: selectedMatch.icon.page_number,
           color: '#f97316',
           confidence: selectedMatch.icon.confidence,
+          label: iconLabel, // Display LLM-assigned label on the box
         });
       }
       if (showLabels && selectedMatch.label) {

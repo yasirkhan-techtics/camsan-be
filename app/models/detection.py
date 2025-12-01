@@ -129,6 +129,9 @@ class IconLabelMatch(BaseModel):
         default="matched",
         nullable=False,
     )
+    # LLM-assigned label text (used when LLM directly reads the label from image)
+    # This allows matching without requiring a physical LabelDetection record
+    llm_assigned_label = Column(Text, nullable=True)
 
     icon_detection = relationship("IconDetection", lazy="joined")
     label_detection = relationship("LabelDetection", lazy="joined")

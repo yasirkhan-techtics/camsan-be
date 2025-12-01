@@ -92,6 +92,12 @@ class TagOverlapResolutionLLMResponse(BaseModel):
 
 
 # LLM Matcher Schemas
+class TemplateVerificationResult(BaseModel):
+    is_match: bool = Field(..., description="Whether the detected icon matches the template")
+    confidence: str = Field(default="low", description="Confidence level: high/medium/low")
+    reasoning: str = Field(default="", description="Brief explanation comparing both symbols")
+
+
 class IconMatchResult(BaseModel):
     match_found: bool = Field(..., description="Whether a matching tag was found")
     matched_tag: Optional[str] = Field(None, description="Name of the matched tag")

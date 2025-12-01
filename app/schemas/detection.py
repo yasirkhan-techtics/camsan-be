@@ -108,6 +108,7 @@ class IconLabelMatchResponse(BaseModel):
     match_confidence: float
     match_method: str
     match_status: str
+    llm_assigned_label: Optional[str] = None  # LLM-assigned label (when no physical tag detection)
     created_at: datetime
     updated_at: datetime
 

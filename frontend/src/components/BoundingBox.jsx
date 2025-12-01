@@ -9,6 +9,7 @@ const BoundingBox = ({
   onDelete,
   onSelect,
   score,
+  label, // Label text to display on the box (e.g., LLM-assigned label)
 }) => {
   const [currentBbox, setCurrentBbox] = useState(bbox);
   const [isDragging, setIsDragging] = useState(false);
@@ -170,7 +171,29 @@ const BoundingBox = ({
       onMouseDown={(e) => handleMouseDown(e)}
       className="bbox-overlay"
     >
-      {score !== undefined && (
+      {/* Label display (for AI-matched icons) */}
+      {label && (
+        <div
+          style={{
+            position: 'absolute',
+            top: -18,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            fontSize: '11px',
+            fontWeight: 'bold',
+            padding: '1px 6px',
+            backgroundColor: borderColor,
+            color: '#fff',
+            borderRadius: '3px',
+            whiteSpace: 'nowrap',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+          }}
+        >
+          {label}
+        </div>
+      )}
+      {/* Confidence score display */}
+      {score !== undefined && !label && (
         <div
           style={{
             position: 'absolute',

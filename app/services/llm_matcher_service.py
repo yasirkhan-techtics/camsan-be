@@ -26,7 +26,7 @@ from models.page import PDFPage
 from models.project import Project
 from services.llm_service import LLMService, get_llm_service
 from services.storage_service import StorageService, get_storage_service
-from schemas.llm_schemas import IconMatchResult, TagMatchResult
+from schemas.llm_schemas import IconMatchResult, TagMatchResult, TemplateVerificationResult
 
 
 class LLMMatcherService:
@@ -95,6 +95,54 @@ class LLMMatcherService:
 
         return stats
 
+    def _create_icon_verification_crop(
+        self,
+        image: np.ndarray,
+        center: Tuple[int, int],
+        bbox: List[int],
+    ) -> np.ndarray:
+        """
+        Create a crop of the icon with bounding box overlay for template verification.
+        
+        Args:
+            image: Full image as numpy array
+            center: Center coordinates of the icon
+            bbox: Icon bounding box [x, y, width, height]
+            
+        Returns:
+            Cropped image with bounding box overlay
+        """
+        cx, cy = center
+        img_h, img_w = image.shape[:2]
+        
+        icon_x, icon_y, icon_w, icon_h = bbox
+        
+        # Add padding around the icon
+        pad_w = int(icon_w * 0.5)
+        pad_h = int(icon_h * 0.5)
+        
+        crop_x1 = max(0, icon_x - pad_w)
+        crop_y1 = max(0, icon_y - pad_h)
+        crop_x2 = min(img_w, icon_x + icon_w + pad_w)
+        crop_y2 = min(img_h, icon_y + icon_h + pad_h)
+        
+        icon_crop = image[crop_y1:crop_y2, crop_x1:crop_x2].copy()
+        
+        # Calculate bbox position in crop coordinates
+        x1_in_crop = icon_x - crop_x1
+        y1_in_crop = icon_y - crop_y1
+        x2_in_crop = x1_in_crop + icon_w
+        y2_in_crop = y1_in_crop + icon_h
+        
+        # Draw semi-transparent magenta bounding box
+        overlay = icon_crop.copy()
+        cv2.rectangle(overlay, (x1_in_crop, y1_in_crop), (x2_in_crop, y2_in_crop), 
+                      (255, 0, 255), thickness=2)
+        alpha = 0.7
+        cv2.addWeighted(overlay, alpha, icon_crop, 1 - alpha, 0, icon_crop)
+        
+        return icon_crop
+
     def _create_padded_crop(
         self,
         image: np.ndarray,
@@ -145,9 +193,8 @@ class LLMMatcherService:
         # Calculate center in crop coordinates
         center_in_crop = (cx - x1, cy - y1)
 
-        # Draw marker at center
-        color = (0, 255, 0) if is_icon else (255, 0, 255)
-        cv2.drawMarker(crop, center_in_crop, color, cv2.MARKER_CROSS, 30, 3)
+        # Draw marker at center (MAGENTA crosshair)
+        cv2.drawMarker(crop, center_in_crop, (255, 0, 255), cv2.MARKER_CROSS, 30, 3)
 
         crop_info = {
             "x1": x1,
@@ -212,45 +259,85 @@ class LLMMatcherService:
 
         return result
 
+    def _create_template_verification_prompt(self) -> str:
+        """Create prompt for verifying if detected icon matches the template."""
+        return """You are comparing two electrical construction drawing symbols.
+
+**IMAGES PROVIDED:**
+1. **TEMPLATE SYMBOL** - The reference symbol we're looking for
+2. **DETECTED SYMBOL** - The symbol found in the drawing (marked with MAGENTA bounding box)
+
+**TASK:** Determine if these two symbols are the SAME type of electrical symbol.
+
+**Instructions:**
+1. Carefully examine BOTH images
+2. Compare the overall shape and structure
+3. Look for key identifying features (lines, circles, connections, orientation)
+4. Be lenient with:
+   - Minor size differences
+   - Slight rotation variations
+   - Small drawing style differences
+5. Be strict with:
+   - Overall symbol type (they must be fundamentally the same symbol)
+   - Key structural elements
+
+**Response Format:**
+You MUST respond with VALID JSON in this exact format:
+{
+  "is_match": true or false,
+  "confidence": "high" or "medium" or "low",
+  "reasoning": "brief explanation comparing both symbols"
+}
+
+**IMPORTANT:**
+- Compare the ACTUAL symbols in both images
+- Respond ONLY with valid JSON
+- Use true/false (lowercase) for is_match
+- Keep reasoning brief but specific to what you see in BOTH images
+"""
+
     def _create_icon_matching_prompt(
         self,
         icon_name: str,
-        available_tags: List[str],
+        available_tags: List[str] = None,
     ) -> str:
         """Create prompt for asking LLM to find matching tag for an icon."""
-        tags_list = "\n".join([f"  - {tag}" for tag in available_tags])
+        # If available_tags provided, include them as hints
+        tags_hint = ""
+        if available_tags:
+            tags_list = ", ".join(available_tags)
+            tags_hint = f"\n**Common label formats in this drawing:** {tags_list}"
 
-        return f"""You are analyzing an electrical drawing to match symbols with their labels.
+        return f"""You are analyzing an electrical drawing to match a symbol with its label.
 
-**TASK:** Find the label/tag that belongs to the ICON marked with a GREEN crosshair (+).
+**TASK:** Find the label/tag that belongs to the ICON marked with a MAGENTA crosshair (+).
 
 **Icon Type:** {icon_name}
-
-**Available Tags:**
-{tags_list}
+{tags_hint}
 
 **Instructions:**
-1. Look at the icon marked with the GREEN crosshair
+1. Look at the icon marked with the MAGENTA crosshair
 2. Search the surrounding area for a text label that identifies THIS specific icon
-3. The tag should be near the icon (typically within a few icon-widths)
-4. Choose ONLY from the available tags listed above
+3. The label should be near the icon (typically within a few icon-widths)
+4. Read the EXACT text of the label you see (e.g., "CL1", "S2", "P-101")
+5. Labels are typically alphanumeric codes near the symbol
 
 **Response Format:**
-Respond with JSON in this exact format:
+You MUST respond with VALID JSON in this exact format:
 {{
   "match_found": true or false,
-  "matched_tag": "tag_name" or null,
+  "matched_tag": "exact_label_text" or null,
   "confidence": "high" or "medium" or "low",
   "reasoning": "brief explanation"
 }}
 
-If NO match found:
-{{
-  "match_found": false,
-  "matched_tag": null,
-  "confidence": "low",
-  "reasoning": "No clear tag visible near the marked icon"
-}}"""
+**IMPORTANT:**
+- Respond ONLY with valid JSON
+- Use true/false (lowercase) for match_found
+- Return the EXACT text you see for matched_tag
+- Use null (not "null" or "None") if no label visible
+- Keep reasoning brief (one sentence)
+"""
 
     def _create_tag_matching_prompt(
         self,
@@ -402,8 +489,11 @@ If NO match found:
         used_tags = set()
         used_icon_ids = set()
 
+        # Track icons that fail template verification
+        icons_rejected = 0
+        
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # PHASE 1: Match unmatched icons to tags
+            # PHASE 1: Match unmatched icons to tags (TWO-STEP VERIFICATION)
             if unmatched_icons and available_tags:
                 print(f"\n   PHASE 1: Matching unmatched icons to tags")
 
@@ -421,6 +511,7 @@ If NO match found:
                         else "Unknown"
                     )
                     center = (int(icon_det.center[0]), int(icon_det.center[1]))
+                    bbox = icon_det.bbox  # [x, y, width, height]
 
                     print(f"\n      Icon '{icon_name}' at {center}")
 
@@ -433,13 +524,61 @@ If NO match found:
                     if image is None:
                         continue
 
-                    # Create padded crop
+                    # STEP 1: Template Verification
+                    # Get template image path
+                    template_url = (
+                        icon_det.icon_template.cropped_icon_url
+                        if icon_det.icon_template
+                        else None
+                    )
+                    
+                    if template_url:
+                        print(f"         STEP 1: Template verification...")
+                        
+                        # Download template
+                        template_path = os.path.join(tmp_dir, f"template_{icon_det.icon_template_id}.png")
+                        if not os.path.exists(template_path):
+                            self.storage.download_file(template_url, template_path)
+                        
+                        # Create icon verification crop with bounding box
+                        icon_verification_crop = self._create_icon_verification_crop(
+                            image, center, bbox
+                        )
+                        
+                        # Save crops for LLM
+                        icon_crop_path = os.path.join(tmp_dir, f"icon_{icon_det.id}_verify.png")
+                        cv2.imwrite(icon_crop_path, icon_verification_crop)
+                        
+                        # Query LLM for template verification
+                        template_prompt = self._create_template_verification_prompt()
+                        
+                        try:
+                            verification_result = self.llm._invoke_with_template_comparison(
+                                template_prompt, template_path, icon_crop_path, TemplateVerificationResult
+                            )
+                            stats["api_calls_made"] += 1
+                            
+                            if not verification_result.is_match:
+                                print(f"         ❌ Template verification FAILED: {verification_result.reasoning}")
+                                icons_rejected += 1
+                                continue
+                            
+                            print(f"         ✅ Template verified (conf={verification_result.confidence})")
+                            
+                        except Exception as e:
+                            print(f"         ⚠️ Template verification error: {e}, proceeding anyway...")
+                            stats["api_calls_made"] += 1
+                    
+                    # STEP 2: Find matching label
+                    print(f"         STEP 2: Finding matching label...")
+                    
+                    # Create padded crop for label search
                     crop, crop_info = self._create_padded_crop(
                         image, center, padding_stats, is_icon=True
                     )
 
                     # Save crop
-                    crop_path = os.path.join(tmp_dir, f"icon_{icon_det.id}_crop.png")
+                    crop_path = os.path.join(tmp_dir, f"icon_{icon_det.id}_label_search.png")
                     cv2.imwrite(crop_path, crop)
 
                     # Create prompt and query LLM
@@ -456,51 +595,26 @@ If NO match found:
                             continue
 
                         matched_tag = result.matched_tag
-                        if matched_tag not in available_tags:
-                            print(f"         Invalid tag: {matched_tag}")
-                            continue
-
-                        if matched_tag in used_tags:
-                            print(f"         Tag '{matched_tag}' already used")
-                            continue
-
-                        # Find the tag detection
-                        tag_det = next(
-                            (t for t in unassigned_tags
-                             if t.label_template
-                             and t.label_template.legend_item
-                             and t.label_template.legend_item.label_text == matched_tag
-                             and t.id not in used_tags),
-                            None
-                        )
-
-                        if not tag_det:
-                            print(f"         Could not find tag detection for '{matched_tag}'")
-                            continue
-
-                        # Calculate distance
-                        tag_center = tag_det.center
-                        distance = np.sqrt(
-                            (center[0] - tag_center[0]) ** 2
-                            + (center[1] - tag_center[1]) ** 2
-                        )
-
-                        # Update match
-                        match.label_detection_id = tag_det.id
-                        match.distance = float(distance)
-                        match.match_confidence = 0.85
+                        
+                        # For LLM-verified tags, we don't need to find a physical tag detection
+                        # The LLM directly reads the label from the image
+                        # We just store the label text with the match
+                        
+                        # Update match with LLM-assigned label
+                        # No label_detection_id needed - we store the label text directly
+                        match.llm_assigned_label = matched_tag
+                        match.distance = 0.0  # No physical distance when LLM reads label
+                        match.match_confidence = 0.85 if result.confidence == "high" else 0.70 if result.confidence == "medium" else 0.55
                         match.match_method = "llm_matched"
                         match.match_status = "matched"
                         self.db.add(match)
 
-                        used_tags.add(matched_tag)
                         used_icon_ids.add(icon_det.id)
-                        available_tags.remove(matched_tag)
                         stats["icons_matched"] += 1
 
                         print(
-                            f"         MATCHED to '{matched_tag}' "
-                            f"(conf={result.confidence}, dist={distance:.1f}px)"
+                            f"         ✅ MATCHED to '{matched_tag}' "
+                            f"(conf={result.confidence}, LLM-assigned)"
                         )
 
                     except Exception as e:
@@ -642,9 +756,13 @@ If NO match found:
 
         self.db.commit()
 
+        # Add rejected count to stats
+        stats["icons_rejected"] = icons_rejected
+
         print(f"\n{'='*60}")
         print(f"LLM MATCHING COMPLETE")
         print(f"   Icons matched: {stats['icons_matched']}")
+        print(f"   Icons rejected (template mismatch): {icons_rejected}")
         print(f"   Tags matched: {stats['tags_matched']}")
         print(f"   API calls made: {stats['api_calls_made']}")
         print(f"{'='*60}")
