@@ -259,6 +259,94 @@ class LLMMatcherService:
 
         return result
 
+    def _patch_matched_pairs_with_white(
+        self,
+        image: np.ndarray,
+        matched_pairs: List[IconLabelMatch],
+    ) -> np.ndarray:
+        """
+        Patch already matched icon and tag bounding boxes with white rectangles.
+        This prevents the LLM from being confused by already-matched symbols.
+        
+        Args:
+            image: Full page image as numpy array
+            matched_pairs: List of matched IconLabelMatch records
+            
+        Returns:
+            Image with white patches over matched pairs
+        """
+        patched_image = image.copy()
+        patched_count = 0
+        
+        for match in matched_pairs:
+            # Patch icon bbox
+            if match.icon_detection and match.icon_detection.bbox:
+                bbox = match.icon_detection.bbox  # [x, y, w, h]
+                x1 = int(bbox[0])
+                y1 = int(bbox[1])
+                x2 = int(bbox[0] + bbox[2])
+                y2 = int(bbox[1] + bbox[3])
+                cv2.rectangle(patched_image, (x1, y1), (x2, y2), (255, 255, 255), -1)
+            
+            # Patch tag bbox
+            if match.label_detection and match.label_detection.bbox:
+                bbox = match.label_detection.bbox  # [x, y, w, h]
+                x1 = int(bbox[0])
+                y1 = int(bbox[1])
+                x2 = int(bbox[0] + bbox[2])
+                y2 = int(bbox[1] + bbox[3])
+                cv2.rectangle(patched_image, (x1, y1), (x2, y2), (255, 255, 255), -1)
+            
+            patched_count += 1
+        
+        if patched_count > 0:
+            print(f"   🎨 Patched {patched_count} matched pairs with white boxes")
+        
+        return patched_image
+
+    def _find_closest_tag_detection(
+        self,
+        matched_tag_name: str,
+        icon_center: Tuple[int, int],
+        unassigned_tags: List[LabelDetection],
+    ) -> Optional[Tuple[LabelDetection, float]]:
+        """
+        Find the closest unassigned tag detection matching the given tag name.
+        
+        Args:
+            matched_tag_name: The tag name to search for
+            icon_center: Center coordinates of the icon
+            unassigned_tags: List of unassigned tag detections
+            
+        Returns:
+            Tuple of (closest tag detection, distance) or None if not found
+        """
+        matching_tags = []
+        
+        for tag in unassigned_tags:
+            # Get tag name from template or legend item
+            tag_name = None
+            if tag.label_template:
+                tag_name = tag.label_template.tag_name
+                if not tag_name and tag.label_template.legend_item:
+                    tag_name = tag.label_template.legend_item.label_text
+            
+            if tag_name == matched_tag_name:
+                # Calculate distance (convert to native float for DB compatibility)
+                tag_center = (tag.center[0], tag.center[1])
+                distance = float(np.sqrt(
+                    (tag_center[0] - icon_center[0])**2 +
+                    (tag_center[1] - icon_center[1])**2
+                ))
+                matching_tags.append((tag, distance))
+        
+        if not matching_tags:
+            return None
+        
+        # Return the closest one
+        matching_tags.sort(key=lambda x: x[1])
+        return matching_tags[0]
+
     def _create_template_verification_prompt(self) -> str:
         """Create prompt for verifying if detected icon matches the template."""
         return """You are comparing two electrical construction drawing symbols.
@@ -302,31 +390,33 @@ You MUST respond with VALID JSON in this exact format:
         available_tags: List[str] = None,
     ) -> str:
         """Create prompt for asking LLM to find matching tag for an icon."""
-        # If available_tags provided, include them as hints
-        tags_hint = ""
+        # Format available tags as a list
+        tags_list = ""
         if available_tags:
-            tags_list = ", ".join(available_tags)
-            tags_hint = f"\n**Common label formats in this drawing:** {tags_list}"
+            tags_list = "\n".join([f"  - {tag}" for tag in available_tags])
 
         return f"""You are analyzing an electrical drawing to match a symbol with its label.
 
 **TASK:** Find the label/tag that belongs to the ICON marked with a MAGENTA crosshair (+).
 
 **Icon Type:** {icon_name}
-{tags_hint}
+
+**Available Labels (choose from these only):**
+{tags_list}
 
 **Instructions:**
 1. Look at the icon marked with the MAGENTA crosshair
 2. Search the surrounding area for a text label that identifies THIS specific icon
 3. The label should be near the icon (typically within a few icon-widths)
-4. Read the EXACT text of the label you see (e.g., "CL1", "S2", "P-101")
-5. Labels are typically alphanumeric codes near the symbol
+4. Choose ONLY from the available labels listed above
+5. For minor OCR variations (like "1" vs "I", "0" vs "O"), match the closest label
+6. If multiple instances of same label exist, any match is valid
 
 **Response Format:**
 You MUST respond with VALID JSON in this exact format:
 {{
   "match_found": true or false,
-  "matched_tag": "exact_label_text" or null,
+  "matched_tag": "label_name" or null,
   "confidence": "high" or "medium" or "low",
   "reasoning": "brief explanation"
 }}
@@ -334,8 +424,7 @@ You MUST respond with VALID JSON in this exact format:
 **IMPORTANT:**
 - Respond ONLY with valid JSON
 - Use true/false (lowercase) for match_found
-- Return the EXACT text you see for matched_tag
-- Use null (not "null" or "None") if no label visible
+- Use null (not "null" or "None") if no match
 - Keep reasoning brief (one sentence)
 """
 
@@ -353,19 +442,20 @@ You MUST respond with VALID JSON in this exact format:
 
 **Label/Tag:** {tag_name} (marked with MAGENTA crosshair +)
 
-**Note:** Already matched icons are shown with GRAY semi-transparent overlay. Look for icons WITHOUT gray overlay.
+**Note:** Already matched pairs have been removed (white patches). Look for visible icons only.
 
-**Available Icon Types:**
+**Available Icon Types (choose from these only):**
 {icons_list}
 
 **Instructions:**
 1. Look at the tag/label marked with the MAGENTA crosshair
-2. Search for a nearby icon (symbol) that this label identifies
-3. IGNORE icons with gray overlay (already matched)
+2. Search the surrounding area for a nearby icon (symbol) that this label identifies
+3. The icon should be near the tag (typically within a few icon-widths)
 4. Choose ONLY from the available icon types listed above
+5. If the icon type matches one in the list, select it even with minor drawing variations
 
 **Response Format:**
-Respond with JSON in this exact format:
+You MUST respond with VALID JSON in this exact format:
 {{
   "match_found": true or false,
   "matched_icon_type": "icon_type" or null,
@@ -373,13 +463,12 @@ Respond with JSON in this exact format:
   "reasoning": "brief explanation"
 }}
 
-If NO match found:
-{{
-  "match_found": false,
-  "matched_icon_type": null,
-  "confidence": "low",
-  "reasoning": "No unmatched icons visible near the tag"
-}}"""
+**IMPORTANT:**
+- Respond ONLY with valid JSON
+- Use true/false (lowercase) for match_found
+- Use null (not "null" or "None") if no match
+- Keep reasoning brief (one sentence)
+"""
 
     def _get_matching_context(
         self,
@@ -490,14 +579,21 @@ If NO match found:
                 "api_calls_made": 0,
             }
 
-        # Get available tags
+        # Get matched pairs for white patching
+        matched_pairs = [
+            m for m in all_matches
+            if m.match_status == "matched" and m.label_detection_id
+        ]
+
+        # Get available tags (unique tag names)
         available_tags = list(set(
-            t.label_template.legend_item.label_text
+            t.label_template.tag_name or t.label_template.legend_item.label_text
             for t in unassigned_tags
-            if t.label_template and t.label_template.legend_item
+            if t.label_template and (t.label_template.tag_name or t.label_template.legend_item)
         ))
 
         print(f"   Available tag types: {available_tags}")
+        print(f"   Matched pairs to white-patch: {len(matched_pairs)}")
 
         stats = {
             "total_unmatched_icons": len(unmatched_icons),
@@ -507,8 +603,12 @@ If NO match found:
         }
 
         used_icon_ids = set()
+        used_tag_ids = set()  # Track used tags to avoid re-matching
 
         with tempfile.TemporaryDirectory() as tmp_dir:
+            # Cache for patched page images
+            patched_pages = {}
+            
             for match in unmatched_icons:
                 icon_det = match.icon_detection
                 if not icon_det:
@@ -524,12 +624,29 @@ If NO match found:
 
                 print(f"\n      Icon '{icon_name}' at {center}")
 
-                # Download page image
-                page_path = os.path.join(tmp_dir, f"page_{icon_det.page_id}.png")
-                if not os.path.exists(page_path):
-                    self.storage.download_file(icon_det.page.image_url, page_path)
-
-                image = cv2.imread(page_path)
+                # Download and patch page image (cached per page)
+                page_id = str(icon_det.page_id)
+                if page_id not in patched_pages:
+                    page_path = os.path.join(tmp_dir, f"page_{page_id}.png")
+                    if not os.path.exists(page_path):
+                        self.storage.download_file(icon_det.page.image_url, page_path)
+                    
+                    raw_image = cv2.imread(page_path)
+                    if raw_image is None:
+                        continue
+                    
+                    # Get matched pairs for this page
+                    page_matched_pairs = [
+                        m for m in matched_pairs
+                        if m.icon_detection and str(m.icon_detection.page_id) == page_id
+                    ]
+                    
+                    # Apply white patching to matched pairs
+                    patched_pages[page_id] = self._patch_matched_pairs_with_white(
+                        raw_image, page_matched_pairs
+                    )
+                
+                image = patched_pages[page_id]
                 if image is None:
                     continue
 
@@ -604,11 +721,30 @@ If NO match found:
 
                     matched_tag = result.matched_tag
                     
+                    # Validate matched tag is in available tags
+                    if matched_tag not in available_tags:
+                        print(f"         ⚠️ Invalid tag '{matched_tag}' not in available tags, skipping...")
+                        continue
+                    
+                    # Find closest unassigned tag detection for this tag name
+                    remaining_tags = [t for t in unassigned_tags if t.id not in used_tag_ids]
+                    closest_result = self._find_closest_tag_detection(
+                        matched_tag, center, remaining_tags
+                    )
+                    
+                    distance = 0.0
+                    if closest_result:
+                        closest_tag, distance = closest_result
+                        # Link to the physical tag detection
+                        match.label_detection_id = closest_tag.id
+                        match.distance = distance
+                        used_tag_ids.add(closest_tag.id)
+                        print(f"         📍 Linked to tag detection at distance {distance:.1f}px")
+                    
                     # Update match with LLM-assigned label
                     match.llm_assigned_label = matched_tag
-                    match.distance = 0.0
                     match.match_confidence = 0.85 if result.confidence == "high" else 0.70 if result.confidence == "medium" else 0.55
-                    match.match_method = "llm_tag_for_icon"
+                    match.match_method = "llm_matched"
                     match.match_status = "matched"
                     self.db.add(match)
 
@@ -617,7 +753,7 @@ If NO match found:
 
                     print(
                         f"         ✅ MATCHED to '{matched_tag}' "
-                        f"(conf={result.confidence}, LLM-assigned)"
+                        f"(conf={result.confidence}, dist={distance:.1f}px)"
                     )
 
                 except Exception as e:
@@ -693,6 +829,13 @@ If NO match found:
 
         print(f"   Available icon types: {available_icon_types}")
 
+        # Get matched pairs for white patching
+        matched_pairs = [
+            m for m in all_matches
+            if m.match_status == "matched" and m.label_detection_id
+        ]
+        print(f"   Matched pairs to white-patch: {len(matched_pairs)}")
+
         stats = {
             "total_unassigned_tags": len(unassigned_tags),
             "tags_matched": 0,
@@ -702,32 +845,50 @@ If NO match found:
         used_tags = set()
         used_icon_ids = set()
 
-        # Get matched icons for overlay
-        matched_icons = [
-            m.icon_detection for m in all_matches
-            if m.match_status == "matched" and m.icon_detection
-        ]
-
         with tempfile.TemporaryDirectory() as tmp_dir:
+            # Cache for patched page images
+            patched_pages = {}
+            
             for tag_det in unassigned_tags:
                 tag_name = (
-                    tag_det.label_template.legend_item.label_text
-                    if tag_det.label_template and tag_det.label_template.legend_item
-                    else "Unknown"
+                    tag_det.label_template.tag_name
+                    if tag_det.label_template and tag_det.label_template.tag_name
+                    else (
+                        tag_det.label_template.legend_item.label_text
+                        if tag_det.label_template and tag_det.label_template.legend_item
+                        else "Unknown"
+                    )
                 )
 
-                if tag_name in used_tags:
+                if tag_det.id in used_tags:
                     continue
 
                 center = (int(tag_det.center[0]), int(tag_det.center[1]))
                 print(f"\n      Tag '{tag_name}' at {center}")
 
-                # Download page image
-                page_path = os.path.join(tmp_dir, f"page_{tag_det.page_id}.png")
-                if not os.path.exists(page_path):
-                    self.storage.download_file(tag_det.page.image_url, page_path)
-
-                image = cv2.imread(page_path)
+                # Download and patch page image (cached per page)
+                page_id = str(tag_det.page_id)
+                if page_id not in patched_pages:
+                    page_path = os.path.join(tmp_dir, f"page_{page_id}.png")
+                    if not os.path.exists(page_path):
+                        self.storage.download_file(tag_det.page.image_url, page_path)
+                    
+                    raw_image = cv2.imread(page_path)
+                    if raw_image is None:
+                        continue
+                    
+                    # Get matched pairs for this page
+                    page_matched_pairs = [
+                        m for m in matched_pairs
+                        if m.icon_detection and str(m.icon_detection.page_id) == page_id
+                    ]
+                    
+                    # Apply white patching to matched pairs
+                    patched_pages[page_id] = self._patch_matched_pairs_with_white(
+                        raw_image, page_matched_pairs
+                    )
+                
+                image = patched_pages[page_id]
                 if image is None:
                     continue
 
@@ -735,9 +896,6 @@ If NO match found:
                 crop, crop_info = self._create_padded_crop(
                     image, center, padding_stats, is_icon=False
                 )
-
-                # Overlay matched icons
-                crop = self._overlay_matched_icons(crop, crop_info, matched_icons)
 
                 # Save crop
                 crop_path = os.path.join(tmp_dir, f"tag_{tag_det.id}_crop.png")
@@ -807,11 +965,11 @@ If NO match found:
                     closest_match.label_detection_id = tag_det.id
                     closest_match.distance = float(closest_dist)
                     closest_match.match_confidence = 0.80
-                    closest_match.match_method = "llm_icon_for_tag"
+                    closest_match.match_method = "llm_matched"
                     closest_match.match_status = "matched"
                     self.db.add(closest_match)
 
-                    used_tags.add(tag_name)
+                    used_tags.add(tag_det.id)
                     used_icon_ids.add(closest_match.icon_detection.id)
                     stats["tags_matched"] += 1
 
