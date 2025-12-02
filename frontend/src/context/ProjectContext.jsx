@@ -137,6 +137,8 @@ export const ProjectProvider = ({ children }) => {
             type,
             bbox_normalized: normalized,
             page_number: page?.page_number || 1,
+            // Explicitly preserve tag_name for label detections
+            tag_name: det.tag_name || null,
           };
         })
         .filter(Boolean);

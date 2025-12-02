@@ -3,7 +3,7 @@ import { ProjectProvider, useProject } from './context/ProjectContext';
 import Sidebar from './components/Sidebar';
 import LegendTablesSection from './components/LegendTablesSection';
 import LegendItemsSection from './components/LegendItemsSection';
-import IconTaggingSection from './components/IconTaggingSection';
+import ProcessingSection from './components/ProcessingSection';
 import SettingsSection from './components/SettingsSection';
 import api from './utils/api';
 import './index.css';
@@ -139,15 +139,15 @@ const AppContent = () => {
                 Legend Items
               </button>
               <button
-                onClick={() => setActiveSection('icon-tagging')}
+                onClick={() => setActiveSection('processing')}
                 className={`
                   px-4 py-2 font-medium border-b-2 transition-colors
-                  ${activeSection === 'icon-tagging'
+                  ${activeSection === 'processing'
                     ? 'border-primary text-primary'
                     : 'border-transparent text-gray-600 hover:text-gray-900'}
                 `}
               >
-                Icon Tagging
+                Processing
               </button>
               <button
                 onClick={() => setActiveSection('settings')}
@@ -180,7 +180,7 @@ const AppContent = () => {
             <>
               {activeSection === 'legend-tables' && <LegendTablesSection />}
               {activeSection === 'legend-items' && <LegendItemsSection />}
-              {activeSection === 'icon-tagging' && <IconTaggingSection />}
+              {activeSection === 'processing' && <ProcessingSection />}
               {activeSection === 'settings' && <SettingsSection />}
             </>
           )}

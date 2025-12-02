@@ -41,7 +41,7 @@ class LLMVerificationService:
     def calculate_confidence_threshold(
         self,
         confidences: List[float],
-        approaches: List[str] = ["iqr", "percentile", "std"],
+        approaches: List[str] = ["iqr", "percentile", "std", "kmeans"],
     ) -> float:
         """
         Calculate dynamic confidence threshold using multiple approaches.
@@ -80,11 +80,24 @@ class LLMVerificationService:
             threshold_std = mean_conf - 1.5 * std_conf
             thresholds.append(max(threshold_std, 0.0))
 
-        # Use MAXIMUM to be more conservative
+        # Simple K-means clustering (2 clusters)
+        if "kmeans" in approaches and len(confidences_arr) >= 5:
+            try:
+                from sklearn.cluster import KMeans
+                kmeans = KMeans(n_clusters=2, random_state=42, n_init=10)
+                kmeans.fit(confidences_arr.reshape(-1, 1))
+                centers = sorted(kmeans.cluster_centers_.flatten())
+                threshold_kmeans = (centers[0] + centers[1]) / 2
+                thresholds.append(threshold_kmeans)
+            except Exception:
+                pass
+
+        # Use MAXIMUM to be more conservative (fewer false negatives)
+        # This ensures we only auto-approve the most confident detections
         if thresholds:
             combined_threshold = float(np.max(thresholds))
-            print(f"   Thresholds calculated: {[f'{t:.4f}' for t in thresholds]}")
-            print(f"   Selected threshold (max): {combined_threshold:.4f}")
+            print(f"         Individual thresholds: {[f'{t:.4f}' for t in thresholds]}")
+            print(f"         Selected threshold (max): {combined_threshold:.4f}")
             return combined_threshold
 
         return 0.5

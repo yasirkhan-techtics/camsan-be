@@ -9,6 +9,18 @@ class UpdateBBoxRequest(BaseModel):
     bbox_normalized: List[float]
 
 
+class IconTemplateSimple(BaseModel):
+    """Simplified icon template for embedding in legend item response"""
+    id: UUID
+    original_bbox: List[Any]
+    cropped_icon_url: str
+    preprocessed_icon_url: Optional[str] = None
+    template_ready: bool = False
+
+    class Config:
+        from_attributes = True
+
+
 class LabelTemplateSimple(BaseModel):
     """Simplified label template for embedding in legend item response"""
     id: UUID
@@ -27,6 +39,7 @@ class LegendItemResponse(BaseModel):
     label_text: Optional[str]  # Kept for backward compatibility
     order_index: int
     icon_bbox_status: str
+    icon_template: Optional[IconTemplateSimple] = None  # Icon template for this legend item
     label_templates: List[LabelTemplateSimple] = []  # Multiple tags per legend item
     created_at: datetime
     updated_at: datetime

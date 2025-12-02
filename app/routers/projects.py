@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from database import get_db
 from models.project import Project
-from models.legend import LegendTable
-from models.detection import DetectionSettings
+from models.legend import LegendTable, LegendItem
+from models.detection import DetectionSettings, IconTemplate, LabelTemplate
 from schemas.project import (
     ProjectDetailResponse,
     ProjectListResponse,
@@ -128,7 +128,12 @@ def get_project(project_id: UUID, db: Session = Depends(get_db)):
         .filter(Project.id == project_id)
         .options(
             selectinload(Project.pages),
-            selectinload(Project.legend_tables).selectinload(LegendTable.legend_items),
+            selectinload(Project.legend_tables)
+                .selectinload(LegendTable.legend_items)
+                .selectinload(LegendItem.icon_template),
+            selectinload(Project.legend_tables)
+                .selectinload(LegendTable.legend_items)
+                .selectinload(LegendItem.label_templates),
         )
         .first()
     )
@@ -230,6 +235,21 @@ def delete_project(
             print(f"   ⚠️ Failed to delete file {file_url}: {e}")
     
     print(f"   ✅ Deleted {deleted_count}/{len(files_to_delete)} individual files")
+    
+    # Explicitly delete icon_label_matches first (to avoid FK constraint issues)
+    from models.detection import IconLabelMatch, IconDetection, LabelDetection
+    
+    # Get all detection IDs for this project
+    icon_detection_ids = [d.id for d in db.query(IconDetection.id).filter(IconDetection.project_id == project_id).all()]
+    label_detection_ids = [d.id for d in db.query(LabelDetection.id).filter(LabelDetection.project_id == project_id).all()]
+    
+    # Delete matches that reference these detections
+    if icon_detection_ids or label_detection_ids:
+        matches_deleted = db.query(IconLabelMatch).filter(
+            (IconLabelMatch.icon_detection_id.in_(icon_detection_ids)) |
+            (IconLabelMatch.label_detection_id.in_(label_detection_ids))
+        ).delete(synchronize_session=False)
+        print(f"   🔗 Deleted {matches_deleted} icon-label matches")
     
     # Delete project from database (cascade will delete related records)
     db.delete(project)

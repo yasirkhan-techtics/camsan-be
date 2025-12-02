@@ -8,22 +8,12 @@ const LegendItemsSection = () => {
     selectedProject,
     pdfPages,
     legendTables,
-    detections,
-    fetchDetections,
-    updateDetection,
-    deleteDetection
   } = useProject();
   
   const [selectedItemId, setSelectedItemId] = useState(null);
-  const [selectedDetectionId, setSelectedDetectionId] = useState(null);
   const [scrollToPage, setScrollToPage] = useState(null);
   const [isSelectingIcon, setIsSelectingIcon] = useState(false);
   const [isSelectingLabel, setIsSelectingLabel] = useState(false);
-  const [isSearching, setIsSearching] = useState(false);
-  const [isSearchingAll, setIsSearchingAll] = useState(false);
-  const [searchStatus, setSearchStatus] = useState(''); // Current step status message
-  const [searchIcons, setSearchIcons] = useState(true);
-  const [searchLabels, setSearchLabels] = useState(true);
   const [iconTemplate, setIconTemplate] = useState(null);
   const [labelTemplates, setLabelTemplates] = useState([]); // Multiple label templates per item
   const [showTemplateSelector, setShowTemplateSelector] = useState(null); // 'icon' or 'label'
@@ -42,63 +32,14 @@ const LegendItemsSection = () => {
     return legendTables.flatMap(table => table.legend_items || []);
   }, [legendTables]);
 
-  useEffect(() => {
-    // Load detections when an item is selected
-    if (selectedItemId) {
-      fetchDetections(selectedItemId);
-    }
-  }, [selectedItemId, fetchDetections]);
-
   if (!selectedProject) {
     return <div className="p-8 text-center">No project selected</div>;
   }
 
   const pdfUrl = api.getProjectPdf(selectedProject.id);
 
-  const pageMetadata = React.useMemo(() => {
-    const map = new Map();
-    (pdfPages || []).forEach((page) => {
-      if (page?.id) {
-        map.set(page.id, page);
-      }
-    });
-    return map;
-  }, [pdfPages]);
-
-  const boundingBoxes = React.useMemo(() => {
-    if (!detections?.length) return [];
-
-    return detections
-      .map((detection) => {
-        if (
-          !Array.isArray(detection.bbox_normalized) ||
-          detection.bbox_normalized.length !== 4
-        ) {
-          return null;
-        }
-
-        const page = pageMetadata.get(detection.page_id);
-        const isSelected = detection.id === selectedDetectionId;
-        const baseColor =
-          detection.type === 'label'
-            ? '#2563EB'
-            : '#22C55E';
-
-        return {
-          id: detection.id,
-          bbox_normalized: detection.bbox_normalized,
-          page_number: detection.page_number || page?.page_number || 1,
-          color: isSelected ? '#EF4444' : baseColor,
-          type: detection.type,
-          confidence: detection.confidence,
-        };
-      })
-      .filter(Boolean);
-  }, [detections, selectedDetectionId, pageMetadata]);
-
   const handleItemClick = async (item) => {
     setSelectedItemId(item.id);
-    setSelectedDetectionId(null);
     setIsSelectingIcon(false);
     setIsSelectingLabel(false);
     
@@ -124,31 +65,6 @@ const LegendItemsSection = () => {
       const page = pdfPages?.find(p => p.id === legendTable.page_id);
       if (page) {
         setScrollToPage(page.page_number);
-      }
-    }
-  };
-
-  const handleBboxUpdate = async (detectionId, newBbox) => {
-    const detection = detections.find(d => d.id === detectionId);
-    if (detection) {
-      try {
-        await updateDetection(detection.type, detectionId, newBbox);
-      } catch (error) {
-        console.error('Error updating detection:', error);
-      }
-    }
-  };
-
-  const handleBboxDelete = async (detectionId) => {
-    const detection = detections.find(d => d.id === detectionId);
-    if (detection && window.confirm('Delete this detection?')) {
-      try {
-        await deleteDetection(detection.type, detectionId);
-        if (selectedDetectionId === detectionId) {
-          setSelectedDetectionId(null);
-        }
-      } catch (error) {
-        console.error('Error deleting detection:', error);
       }
     }
   };
@@ -429,323 +345,15 @@ const LegendItemsSection = () => {
     }
   }, [imageZoom]);
 
-  const handleSearchItem = async () => {
-    if (!selectedItemId) {
-      console.log('❌ No item selected');
-      return;
-    }
-    
-    if (!searchIcons && !searchLabels) {
-      alert('Please select at least one option (Icons or Labels) to search.');
-      return;
-    }
-    
-    console.log('🔍 ========== STARTING SEARCH ==========');
-    console.log('Legend Item ID:', selectedItemId);
-    console.log('Search options:', { searchIcons, searchLabels });
-    setIsSearching(true);
-    setSearchStatus('Initializing search...');
-    
-    let iconCount = 0;
-    let labelCount = 0;
-    let verificationResults = { icons: null, labels: null };
-    
-    try {
-      // Refresh templates from server to ensure we have latest state
-      let currentIconTemplate = iconTemplate;
-      let currentLabelTemplates = labelTemplates;
-      
-      try {
-        const iconResponse = await api.getIconTemplate(selectedItemId);
-        currentIconTemplate = iconResponse.data;
-        setIconTemplate(currentIconTemplate);
-      } catch (e) {
-        currentIconTemplate = null;
-        setIconTemplate(null);
-      }
-      
-      try {
-        const labelResponse = await api.getLabelTemplates(selectedItemId);
-        currentLabelTemplates = labelResponse.data || [];
-        setLabelTemplates(currentLabelTemplates);
-      } catch (e) {
-        currentLabelTemplates = [];
-        setLabelTemplates([]);
-      }
-      
-      // Search for icons if enabled
-      if (searchIcons && currentIconTemplate) {
-        // STEP 1: Preprocess icon template if needed
-        if (!currentIconTemplate.preprocessed_icon_url) {
-          setSearchStatus('Preprocessing icon template...');
-          console.log('🔧 Preprocessing icon template...');
-          const preprocessResponse = await api.preprocessIcon(selectedItemId);
-          console.log('✅ Icon preprocessed:', preprocessResponse.data);
-          currentIconTemplate = preprocessResponse.data;
-          setIconTemplate(currentIconTemplate);
-        } else {
-          console.log('✅ Icon already preprocessed');
-        }
-
-        // STEP 2: Search for icons
-        setSearchStatus('Detecting icons across all pages...');
-        console.log('🔎 Detecting icons across all pages...');
-        const iconDetectResponse = await api.detectIcons(selectedProject.id);
-        iconCount = iconDetectResponse.data?.length || 0;
-        console.log(`✅ Icon detection complete! Found ${iconCount} total icons`);
-        
-        // STEP 3: LLM Verification for icons
-        if (iconCount > 0) {
-          setSearchStatus(`Verifying ${iconCount} icons with AI (calculating thresholds)...`);
-          console.log('🤖 Starting AI verification for icons...');
-          try {
-            const verifyResponse = await api.verifyIconDetections(selectedProject.id);
-            verificationResults.icons = verifyResponse.data;
-            console.log('✅ Icon verification complete:', verifyResponse.data);
-          } catch (verifyError) {
-            console.warn('⚠️ Icon verification failed:', verifyError.message);
-          }
-        }
-      } else if (searchIcons && !currentIconTemplate) {
-        console.log('⚠️ Icon search enabled but no icon template defined');
-      }
-      
-      // Search for labels if enabled
-      if (searchLabels && currentLabelTemplates.length > 0) {
-        setSearchStatus(`Detecting labels across all pages (${currentLabelTemplates.length} tag templates)...`);
-        console.log(`🔎 Detecting labels across all pages (${currentLabelTemplates.length} tag templates)...`);
-        const labelDetectResponse = await api.detectLabels(selectedProject.id);
-        labelCount = labelDetectResponse.data?.length || 0;
-        console.log(`✅ Label detection complete! Found ${labelCount} total labels`);
-        
-        // STEP 4: LLM Verification for labels
-        if (labelCount > 0) {
-          setSearchStatus(`Verifying ${labelCount} labels with AI (calculating thresholds)...`);
-          console.log('🤖 Starting AI verification for labels...');
-          try {
-            const verifyResponse = await api.verifyLabelDetections(selectedProject.id);
-            verificationResults.labels = verifyResponse.data;
-            console.log('✅ Label verification complete:', verifyResponse.data);
-          } catch (verifyError) {
-            console.warn('⚠️ Label verification failed:', verifyError.message);
-          }
-        }
-      } else if (searchLabels && currentLabelTemplates.length === 0) {
-        console.log('ℹ️ Label search enabled but no label templates defined');
-      }
-
-      // Refresh all detections
-      setSearchStatus('Refreshing detections...');
-      await fetchDetections(selectedItemId);
-
-      // Build summary message
-      const results = [];
-      if (searchIcons) {
-        let iconMsg = `Icons: ${iconCount} detected`;
-        if (verificationResults.icons) {
-          const v = verificationResults.icons;
-          iconMsg += ` → ${v.auto_approved} auto-approved, ${v.llm_approved} AI-approved, ${v.llm_rejected} rejected`;
-        }
-        results.push(iconMsg);
-      }
-      if (searchLabels) {
-        let labelMsg = `Labels: ${labelCount} detected`;
-        if (verificationResults.labels) {
-          const v = verificationResults.labels;
-          labelMsg += ` → ${v.auto_approved} auto-approved, ${v.llm_approved} AI-approved, ${v.llm_rejected} rejected`;
-        }
-        results.push(labelMsg);
-      }
-      
-      setSearchStatus('');
-      alert(`Search & Verification Complete!\n\n${results.join('\n')}\n\nCheck the PDF for highlighted detections.`);
-
-      console.log('✅ ========== SEARCH COMPLETED ==========');
-    } catch (error) {
-      console.error('❌ ========== SEARCH FAILED ==========');
-      console.error('Error:', error);
-      console.error('Error details:', error.response?.data);
-      setSearchStatus('');
-      alert('Error searching: ' + (error.response?.data?.detail || error.message));
-    } finally {
-      setIsSearching(false);
-      setSearchStatus('');
-    }
-  };
-
-  const handleSearchAll = async () => {
-    if (!selectedProject?.id) {
-      console.log('❌ No project selected');
-      return;
-    }
-    
-    // Check if any legend item has an icon template
-    const itemsWithIconTemplate = [];
-    for (const item of legendItems) {
-      try {
-        const response = await api.getIconTemplate(item.id);
-        if (response.data) {
-          itemsWithIconTemplate.push(item);
-        }
-      } catch (error) {
-        // No icon template for this item
-      }
-    }
-    
-    if (itemsWithIconTemplate.length === 0) {
-      alert('No legend items have icon templates. Please select icons for at least one legend item first.');
-      return;
-    }
-    
-    const confirmMsg = `This will search for icons and labels across all pages for ${itemsWithIconTemplate.length} legend item(s) with templates.\n\nThis includes AI verification of results. Continue?`;
-    if (!window.confirm(confirmMsg)) {
-      return;
-    }
-    
-    console.log('🔍 ========== STARTING SEARCH ALL ==========');
-    console.log(`Project ID: ${selectedProject.id}`);
-    console.log(`Items with templates: ${itemsWithIconTemplate.length}`);
-    setIsSearchingAll(true);
-    setSearchStatus('Starting full search...');
-    
-    let iconCount = 0;
-    let labelCount = 0;
-    let verificationResults = { icons: null, labels: null };
-    
-    try {
-      // STEP 1: Preprocess all icon templates
-      setSearchStatus('Step 1/6: Preprocessing icon templates...');
-      console.log('🔧 STEP 1: Preprocessing all icon templates...');
-      for (const item of itemsWithIconTemplate) {
-        try {
-          const templateResponse = await api.getIconTemplate(item.id);
-          if (templateResponse.data && !templateResponse.data.preprocessed_icon_url) {
-            console.log(`   Preprocessing icon for: ${item.description}`);
-            await api.preprocessIcon(item.id);
-          }
-        } catch (error) {
-          console.warn(`   Warning: Could not preprocess icon for ${item.description}:`, error.message);
-        }
-      }
-      console.log('✅ All icon templates preprocessed');
-
-      // STEP 2: Detect all icons
-      setSearchStatus('Step 2/6: Detecting icons across all pages...');
-      console.log('🔎 STEP 2: Detecting all icons across all pages...');
-      const iconDetectResponse = await api.detectIcons(selectedProject.id);
-      iconCount = iconDetectResponse.data?.length || 0;
-      console.log(`✅ Icon detection complete! Found ${iconCount} total icons`);
-
-      // STEP 3: AI Verification for icons
-      if (iconCount > 0) {
-        setSearchStatus(`Step 3/6: AI verifying ${iconCount} icons...`);
-        console.log('🤖 STEP 3: AI verification for icons...');
-        try {
-          const verifyResponse = await api.verifyIconDetections(selectedProject.id);
-          verificationResults.icons = verifyResponse.data;
-          console.log('✅ Icon verification complete:', verifyResponse.data);
-        } catch (verifyError) {
-          console.warn('⚠️ Icon verification failed:', verifyError.message);
-        }
-      }
-
-      // STEP 4: Detect all labels
-      setSearchStatus('Step 4/6: Detecting labels across all pages...');
-      console.log('🔎 STEP 4: Detecting all labels across all pages...');
-      try {
-        const labelDetectResponse = await api.detectLabels(selectedProject.id);
-        labelCount = labelDetectResponse.data?.length || 0;
-        console.log(`✅ Label detection complete! Found ${labelCount} total labels`);
-      } catch (error) {
-        console.warn('⚠️ Label detection skipped or failed:', error.message);
-      }
-
-      // STEP 5: AI Verification for labels
-      if (labelCount > 0) {
-        setSearchStatus(`Step 5/6: AI verifying ${labelCount} labels...`);
-        console.log('🤖 STEP 5: AI verification for labels...');
-        try {
-          const verifyResponse = await api.verifyLabelDetections(selectedProject.id);
-          verificationResults.labels = verifyResponse.data;
-          console.log('✅ Label verification complete:', verifyResponse.data);
-        } catch (verifyError) {
-          console.warn('⚠️ Label verification failed:', verifyError.message);
-        }
-      }
-
-      // STEP 6: Refresh detections
-      setSearchStatus('Step 6/6: Refreshing results...');
-      if (selectedItemId) {
-        await fetchDetections(selectedItemId);
-      }
-
-      // Build summary
-      const results = [];
-      let iconMsg = `Icons: ${iconCount} detected`;
-      if (verificationResults.icons) {
-        const v = verificationResults.icons;
-        iconMsg += `\n  → ${v.auto_approved} auto-approved (high confidence)`;
-        iconMsg += `\n  → ${v.llm_approved} AI-approved (verified by LLM)`;
-        iconMsg += `\n  → ${v.llm_rejected} rejected`;
-      }
-      results.push(iconMsg);
-      
-      let labelMsg = `Labels: ${labelCount} detected`;
-      if (verificationResults.labels) {
-        const v = verificationResults.labels;
-        labelMsg += `\n  → ${v.auto_approved} auto-approved (high confidence)`;
-        labelMsg += `\n  → ${v.llm_approved} AI-approved (verified by LLM)`;
-        labelMsg += `\n  → ${v.llm_rejected} rejected`;
-      }
-      results.push(labelMsg);
-
-      console.log('✅ ========== SEARCH ALL COMPLETED ==========');
-      setSearchStatus('');
-      alert(`Search & AI Verification Complete!\n\n${results.join('\n\n')}\n\nSelect a legend item to view its detections.`);
-    } catch (error) {
-      console.error('❌ ========== SEARCH ALL FAILED ==========');
-      console.error('Error:', error);
-      console.error('Error details:', error.response?.data);
-      setSearchStatus('');
-      alert('Error searching: ' + (error.response?.data?.detail || error.message));
-    } finally {
-      setIsSearchingAll(false);
-      setSearchStatus('');
-    }
-  };
-
   return (
     <div className="flex h-full overflow-hidden">
       {/* PDF Viewer - Main Area */}
       <div className="flex-1 min-w-0 flex flex-col">
-        
-        {(isSearching || isSearchingAll) && (
-          <div className="p-3 bg-gradient-to-r from-indigo-100 to-purple-100 border-b border-indigo-200">
-            <div className="flex items-center justify-center space-x-3">
-              <div className="relative">
-                <div className="animate-spin rounded-full h-5 w-5 border-2 border-indigo-300 border-t-indigo-600"></div>
-              </div>
-              <div className="text-sm font-medium text-indigo-800">
-                {searchStatus || (isSearchingAll ? '🔍 Searching all legend items...' : '🔍 Searching for icons and labels...')}
-              </div>
-            </div>
-            {searchStatus && searchStatus.includes('AI') && (
-              <div className="mt-2 text-xs text-center text-indigo-600">
-                🤖 AI is calculating confidence thresholds and verifying low-confidence detections...
-              </div>
-            )}
-          </div>
-        )}
-        
         <PDFViewer
           pdfUrl={pdfUrl}
-          boundingBoxes={boundingBoxes}
-          selectedBoxId={selectedDetectionId}
-          onBboxUpdate={handleBboxUpdate}
-          onBboxDelete={handleBboxDelete}
-          onBboxSelect={setSelectedDetectionId}
+          boundingBoxes={[]}
           scrollToPage={scrollToPage}
-          isEditable={true}
+          isEditable={false}
           createMode={false}
         />
       </div>
@@ -753,19 +361,9 @@ const LegendItemsSection = () => {
       {/* Right Sidebar - Legend Items List */}
       <div className="w-80 flex-shrink-0 bg-white border-l overflow-y-auto">
         <div className="p-4 border-b bg-gray-50">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-lg font-semibold">Legend Items</h2>
-            <button
-              onClick={handleSearchAll}
-              disabled={isSearchingAll || legendItems.length === 0}
-              className="px-3 py-1 bg-orange-500 text-white text-xs rounded hover:bg-orange-600 disabled:opacity-50 font-medium"
-              title="Search for all icons and labels at once"
-            >
-              {isSearchingAll ? '⏳ Searching...' : '🔍 Search All'}
-            </button>
-          </div>
+          <h2 className="text-lg font-semibold mb-2">Legend Items</h2>
           <p className="text-sm text-gray-600">
-            Click an item to view its detections
+            Click an item to configure its icon and label templates
           </p>
         </div>
 
@@ -804,11 +402,6 @@ const LegendItemsSection = () => {
                   </div>
                 </div>
                 
-                {selectedItemId === item.id && detections.length > 0 && (
-                  <div className="mt-2 pt-2 border-t text-xs text-gray-600">
-                    {detections.length} detection(s) found
-                  </div>
-                )}
               </div>
             ))
           )}
@@ -903,88 +496,17 @@ const LegendItemsSection = () => {
               {/* Instruction */}
               {selectedItemId && legendItems.find(item => item.id === selectedItemId) && (
                 <div className="text-xs text-gray-600 bg-blue-50 p-2 rounded mt-2">
-                  💡 <strong>Tip:</strong> Click "Select Icon" or "Select Label" to draw a tight bounding box around the symbol in the legend table image.
+                  💡 <strong>Tip:</strong> Click "Select Icon" or "Add Label/Tag" to draw a tight bounding box around the symbol in the legend table image.
                 </div>
               )}
               
-              {/* Search Options Checkboxes */}
-              <div className="pt-3 pb-2 border-t mt-3">
-                <div className="text-xs font-medium text-gray-700 mb-2">Search Options</div>
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={searchIcons}
-                      onChange={(e) => setSearchIcons(e.target.checked)}
-                      className="w-4 h-4 text-blue-500 rounded border-gray-300 focus:ring-blue-500"
-                    />
-                    <span className="text-sm text-gray-700">🔷 Icons</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={searchLabels}
-                      onChange={(e) => setSearchLabels(e.target.checked)}
-                      className="w-4 h-4 text-purple-500 rounded border-gray-300 focus:ring-purple-500"
-                    />
-                    <span className="text-sm text-gray-700">📝 Labels/Tags</span>
-                  </label>
-                </div>
-              </div>
-              
-              {/* Search Button */}
-              <button
-                onClick={handleSearchItem}
-                disabled={(!iconTemplate && labelTemplates.length === 0) || isSearching || (!searchIcons && !searchLabels)}
-                className="w-full py-2 px-4 bg-green-500 text-white rounded hover:bg-green-600 disabled:opacity-50 text-sm font-semibold"
-              >
-                {isSearching ? '🔍 Searching...' : '🔍 Search & Detect'}
-              </button>
-              
-              <div className="text-xs text-gray-500 italic pt-1">
-                * At least one template and option required.
-              </div>
-              <div className="text-xs text-amber-600 bg-amber-50 p-2 rounded mt-2">
-                ⚠️ <strong>Note:</strong> Detection uses project-wide settings. If you get too many false matches, increase the threshold in Detection Settings.
+              <div className="text-xs text-amber-600 bg-amber-50 p-2 rounded mt-3">
+                ℹ️ <strong>Next Step:</strong> After configuring all templates, go to the "Processing" tab to run detection and matching.
               </div>
             </div>
           </div>
         )}
 
-        {/* Detection Details */}
-        {selectedItemId && detections.length > 0 && (
-          <div className="border-t bg-gray-50 p-4">
-            <h3 className="font-semibold text-sm mb-2">
-              Detections ({detections.length})
-            </h3>
-            <div className="space-y-2">
-              {detections.map((detection, index) => (
-                <div
-                  key={detection.id}
-                  onClick={() => setSelectedDetectionId(detection.id)}
-                  className={`
-                    p-2 border rounded cursor-pointer text-xs
-                    ${selectedDetectionId === detection.id ? 'bg-red-100 border-red-500' : 'bg-white border-gray-300'}
-                  `}
-                >
-                  <div className="flex justify-between">
-                    <span className="font-medium">
-                      {detection.type === 'icon' ? '🔷 Icon' : '📝 Label'} #{index + 1}
-                    </span>
-                    <span className="text-gray-500">
-                      Page {selectedProject.pages?.find(p => p.id === detection.page_id)?.page_number || '?'}
-                    </span>
-                  </div>
-                  {detection.confidence && (
-                    <div className="text-gray-600 mt-1">
-                      Confidence: {(detection.confidence * 100).toFixed(1)}%
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
       
       {/* Template Selector Modal */}

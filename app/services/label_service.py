@@ -119,12 +119,13 @@ class LabelService:
 
         label_template.original_bbox = [x, y, width, height]
         label_template.cropped_label_url = upload_url
-        label_template.tag_name = tag_name
+        # Auto-set tag_name from legend_item.label_text if not provided
+        label_template.tag_name = tag_name or legend_item.label_text
 
         self.db.add(label_template)
         self.db.commit()
         self.db.refresh(label_template)
-        print(f"   ✅ Label template saved! (tag_name={tag_name})")
+        print(f"   ✅ Label template saved! (tag_name={label_template.tag_name})")
         return label_template
 
     def delete_label_template(self, label_template_id: UUID) -> bool:
@@ -192,6 +193,8 @@ class LabelService:
             label_template = LabelTemplate(legend_item_id=legend_item_id)
 
         label_template.cropped_label_url = upload_url
+        # Auto-set tag_name from legend_item.label_text
+        label_template.tag_name = legend_item.label_text
 
         self.db.add(label_template)
         self.db.commit()

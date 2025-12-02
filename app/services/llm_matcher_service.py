@@ -381,25 +381,16 @@ If NO match found:
   "reasoning": "No unmatched icons visible near the tag"
 }}"""
 
-    def match_unmatched_items(
+    def _get_matching_context(
         self,
         project: Project,
-        save_crops: bool = False,
     ) -> Dict:
         """
-        Match unmatched icons and tags using LLM.
-
-        Args:
-            project: Project to process
-            save_crops: Whether to save crop images for debugging
-
+        Get common context data needed for LLM matching operations.
+        
         Returns:
-            Statistics about matching results
+            Dictionary with all_matches, unmatched_icons, unassigned_tags, padding_stats
         """
-        print(f"\n{'='*60}")
-        print(f"LLM-BASED ICON-TAG MATCHING")
-        print(f"{'='*60}")
-
         # Get all matches for this project
         all_matches = (
             self.db.query(IconLabelMatch)
@@ -450,38 +441,260 @@ If NO match found:
             t for t in all_verified_labels if t.id not in matched_label_ids
         ]
 
-        print(f"   Unmatched icons: {len(unmatched_icons)}")
-        print(f"   Unassigned tags: {len(unassigned_tags)}")
+        return {
+            "all_matches": all_matches,
+            "unmatched_icons": unmatched_icons,
+            "unassigned_tags": unassigned_tags,
+            "padding_stats": padding_stats,
+            "matched_label_ids": matched_label_ids,
+        }
 
-        if not unmatched_icons and not unassigned_tags:
-            print("   Nothing to match!")
+    def match_tags_for_unlabeled_icons(
+        self,
+        project: Project,
+        save_crops: bool = False,
+    ) -> Dict:
+        """
+        PHASE 5: Match unlabeled icons to tags using LLM.
+        
+        This method processes icons that have no assigned label and uses LLM
+        to find matching tags by analyzing the surrounding area.
+        
+        Args:
+            project: Project to process
+            save_crops: Whether to save crop images for debugging
+            
+        Returns:
+            Statistics about matching results
+        """
+        print(f"\n{'='*60}")
+        print(f"PHASE 5: TAG MATCHING FOR UNLABELED ICONS")
+        print(f"{'='*60}")
+
+        # Get matching context
+        context = self._get_matching_context(project)
+        all_matches = context["all_matches"]
+        unmatched_icons = context["unmatched_icons"]
+        unassigned_tags = context["unassigned_tags"]
+        padding_stats = context["padding_stats"]
+
+        print(f"   Unmatched icons: {len(unmatched_icons)}")
+        print(f"   Available unassigned tags: {len(unassigned_tags)}")
+
+        if not unmatched_icons:
+            print("   No unlabeled icons to process!")
             return {
                 "total_unmatched_icons": 0,
-                "total_unassigned_tags": 0,
                 "icons_matched": 0,
-                "tags_matched": 0,
+                "icons_rejected": 0,
                 "api_calls_made": 0,
             }
 
-        # Get available tags and icons
+        # Get available tags
         available_tags = list(set(
             t.label_template.legend_item.label_text
             for t in unassigned_tags
             if t.label_template and t.label_template.legend_item
         ))
+
+        print(f"   Available tag types: {available_tags}")
+
+        stats = {
+            "total_unmatched_icons": len(unmatched_icons),
+            "icons_matched": 0,
+            "icons_rejected": 0,
+            "api_calls_made": 0,
+        }
+
+        used_icon_ids = set()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for match in unmatched_icons:
+                icon_det = match.icon_detection
+                if not icon_det:
+                    continue
+
+                icon_name = (
+                    icon_det.icon_template.legend_item.description
+                    if icon_det.icon_template and icon_det.icon_template.legend_item
+                    else "Unknown"
+                )
+                center = (int(icon_det.center[0]), int(icon_det.center[1]))
+                bbox = icon_det.bbox  # [x, y, width, height]
+
+                print(f"\n      Icon '{icon_name}' at {center}")
+
+                # Download page image
+                page_path = os.path.join(tmp_dir, f"page_{icon_det.page_id}.png")
+                if not os.path.exists(page_path):
+                    self.storage.download_file(icon_det.page.image_url, page_path)
+
+                image = cv2.imread(page_path)
+                if image is None:
+                    continue
+
+                # STEP 1: Template Verification
+                template_url = (
+                    icon_det.icon_template.cropped_icon_url
+                    if icon_det.icon_template
+                    else None
+                )
+                
+                if template_url:
+                    print(f"         STEP 1: Template verification...")
+                    
+                    # Download template
+                    template_path = os.path.join(tmp_dir, f"template_{icon_det.icon_template_id}.png")
+                    if not os.path.exists(template_path):
+                        self.storage.download_file(template_url, template_path)
+                    
+                    # Create icon verification crop with bounding box
+                    icon_verification_crop = self._create_icon_verification_crop(
+                        image, center, bbox
+                    )
+                    
+                    # Save crops for LLM
+                    icon_crop_path = os.path.join(tmp_dir, f"icon_{icon_det.id}_verify.png")
+                    cv2.imwrite(icon_crop_path, icon_verification_crop)
+                    
+                    # Query LLM for template verification
+                    template_prompt = self._create_template_verification_prompt()
+                    
+                    try:
+                        verification_result = self.llm._invoke_with_template_comparison(
+                            template_prompt, template_path, icon_crop_path, TemplateVerificationResult
+                        )
+                        stats["api_calls_made"] += 1
+                        
+                        if not verification_result.is_match:
+                            print(f"         ❌ Template verification FAILED: {verification_result.reasoning}")
+                            stats["icons_rejected"] += 1
+                            continue
+                        
+                        print(f"         ✅ Template verified (conf={verification_result.confidence})")
+                        
+                    except Exception as e:
+                        print(f"         ⚠️ Template verification error: {e}, proceeding anyway...")
+                        stats["api_calls_made"] += 1
+                
+                # STEP 2: Find matching label
+                print(f"         STEP 2: Finding matching label...")
+                
+                # Create padded crop for label search
+                crop, crop_info = self._create_padded_crop(
+                    image, center, padding_stats, is_icon=True
+                )
+
+                # Save crop
+                crop_path = os.path.join(tmp_dir, f"icon_{icon_det.id}_label_search.png")
+                cv2.imwrite(crop_path, crop)
+
+                # Create prompt and query LLM
+                prompt = self._create_icon_matching_prompt(icon_name, available_tags)
+
+                try:
+                    result = self.llm._invoke_with_structured_output(
+                        prompt, crop_path, IconMatchResult
+                    )
+                    stats["api_calls_made"] += 1
+
+                    if not result.match_found or not result.matched_tag:
+                        print(f"         No match found: {result.reasoning}")
+                        continue
+
+                    matched_tag = result.matched_tag
+                    
+                    # Update match with LLM-assigned label
+                    match.llm_assigned_label = matched_tag
+                    match.distance = 0.0
+                    match.match_confidence = 0.85 if result.confidence == "high" else 0.70 if result.confidence == "medium" else 0.55
+                    match.match_method = "llm_tag_for_icon"
+                    match.match_status = "matched"
+                    self.db.add(match)
+
+                    used_icon_ids.add(icon_det.id)
+                    stats["icons_matched"] += 1
+
+                    print(
+                        f"         ✅ MATCHED to '{matched_tag}' "
+                        f"(conf={result.confidence}, LLM-assigned)"
+                    )
+
+                except Exception as e:
+                    print(f"         Error: {e}")
+                    stats["api_calls_made"] += 1
+
+        self.db.commit()
+
+        print(f"\n{'='*60}")
+        print(f"PHASE 5 COMPLETE")
+        print(f"   Icons processed: {stats['total_unmatched_icons']}")
+        print(f"   Icons matched: {stats['icons_matched']}")
+        print(f"   Icons rejected (template mismatch): {stats['icons_rejected']}")
+        print(f"   API calls made: {stats['api_calls_made']}")
+        print(f"{'='*60}")
+
+        return stats
+
+    def match_icons_for_unlabeled_tags(
+        self,
+        project: Project,
+        save_crops: bool = False,
+    ) -> Dict:
+        """
+        PHASE 6: Match unlabeled tags to icons using LLM.
+        
+        This method processes tags that have no assigned icon and uses LLM
+        to find matching icons by analyzing the surrounding area.
+        
+        Args:
+            project: Project to process
+            save_crops: Whether to save crop images for debugging
+            
+        Returns:
+            Statistics about matching results
+        """
+        print(f"\n{'='*60}")
+        print(f"PHASE 6: ICON MATCHING FOR UNLABELED TAGS")
+        print(f"{'='*60}")
+
+        # Get matching context (fresh data after Phase 5)
+        context = self._get_matching_context(project)
+        all_matches = context["all_matches"]
+        unmatched_icons = context["unmatched_icons"]
+        unassigned_tags = context["unassigned_tags"]
+        padding_stats = context["padding_stats"]
+
+        print(f"   Unassigned tags: {len(unassigned_tags)}")
+        print(f"   Remaining unmatched icons: {len(unmatched_icons)}")
+
+        if not unassigned_tags:
+            print("   No unlabeled tags to process!")
+            return {
+                "total_unassigned_tags": 0,
+                "tags_matched": 0,
+                "api_calls_made": 0,
+            }
+
+        if not unmatched_icons:
+            print("   No unmatched icons available to assign!")
+            return {
+                "total_unassigned_tags": len(unassigned_tags),
+                "tags_matched": 0,
+                "api_calls_made": 0,
+            }
+
+        # Get available icon types
         available_icon_types = list(set(
             m.icon_detection.icon_template.legend_item.description
             for m in unmatched_icons
             if m.icon_detection and m.icon_detection.icon_template and m.icon_detection.icon_template.legend_item
         ))
 
-        print(f"   Available tag types: {available_tags}")
         print(f"   Available icon types: {available_icon_types}")
 
         stats = {
-            "total_unmatched_icons": len(unmatched_icons),
             "total_unassigned_tags": len(unassigned_tags),
-            "icons_matched": 0,
             "tags_matched": 0,
             "api_calls_made": 0,
         }
@@ -489,285 +702,188 @@ If NO match found:
         used_tags = set()
         used_icon_ids = set()
 
-        # Track icons that fail template verification
-        icons_rejected = 0
-        
+        # Get matched icons for overlay
+        matched_icons = [
+            m.icon_detection for m in all_matches
+            if m.match_status == "matched" and m.icon_detection
+        ]
+
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # PHASE 1: Match unmatched icons to tags (TWO-STEP VERIFICATION)
-            if unmatched_icons and available_tags:
-                print(f"\n   PHASE 1: Matching unmatched icons to tags")
+            for tag_det in unassigned_tags:
+                tag_name = (
+                    tag_det.label_template.legend_item.label_text
+                    if tag_det.label_template and tag_det.label_template.legend_item
+                    else "Unknown"
+                )
 
-                for match in unmatched_icons:
-                    if not available_tags:
-                        break
+                if tag_name in used_tags:
+                    continue
 
-                    icon_det = match.icon_detection
-                    if not icon_det:
+                center = (int(tag_det.center[0]), int(tag_det.center[1]))
+                print(f"\n      Tag '{tag_name}' at {center}")
+
+                # Download page image
+                page_path = os.path.join(tmp_dir, f"page_{tag_det.page_id}.png")
+                if not os.path.exists(page_path):
+                    self.storage.download_file(tag_det.page.image_url, page_path)
+
+                image = cv2.imread(page_path)
+                if image is None:
+                    continue
+
+                # Create padded crop
+                crop, crop_info = self._create_padded_crop(
+                    image, center, padding_stats, is_icon=False
+                )
+
+                # Overlay matched icons
+                crop = self._overlay_matched_icons(crop, crop_info, matched_icons)
+
+                # Save crop
+                crop_path = os.path.join(tmp_dir, f"tag_{tag_det.id}_crop.png")
+                cv2.imwrite(crop_path, crop)
+
+                # Get remaining icon types (excluding already used)
+                remaining_icon_types = list(set(
+                    m.icon_detection.icon_template.legend_item.description
+                    for m in unmatched_icons
+                    if m.icon_detection
+                    and m.icon_detection.icon_template
+                    and m.icon_detection.icon_template.legend_item
+                    and m.icon_detection.id not in used_icon_ids
+                ))
+
+                if not remaining_icon_types:
+                    print(f"         No remaining icon types")
+                    continue
+
+                prompt = self._create_tag_matching_prompt(tag_name, remaining_icon_types)
+
+                try:
+                    result = self.llm._invoke_with_structured_output(
+                        prompt, crop_path, TagMatchResult
+                    )
+                    stats["api_calls_made"] += 1
+
+                    if not result.match_found or not result.matched_icon_type:
+                        print(f"         No match found: {result.reasoning}")
                         continue
 
-                    icon_name = (
-                        icon_det.icon_template.legend_item.description
-                        if icon_det.icon_template and icon_det.icon_template.legend_item
-                        else "Unknown"
-                    )
-                    center = (int(icon_det.center[0]), int(icon_det.center[1]))
-                    bbox = icon_det.bbox  # [x, y, width, height]
-
-                    print(f"\n      Icon '{icon_name}' at {center}")
-
-                    # Download page image
-                    page_path = os.path.join(tmp_dir, f"page_{icon_det.page_id}.png")
-                    if not os.path.exists(page_path):
-                        self.storage.download_file(icon_det.page.image_url, page_path)
-
-                    image = cv2.imread(page_path)
-                    if image is None:
+                    matched_icon_type = result.matched_icon_type
+                    if matched_icon_type not in remaining_icon_types:
+                        print(f"         Invalid icon type: {matched_icon_type}")
                         continue
 
-                    # STEP 1: Template Verification
-                    # Get template image path
-                    template_url = (
-                        icon_det.icon_template.cropped_icon_url
-                        if icon_det.icon_template
-                        else None
-                    )
-                    
-                    if template_url:
-                        print(f"         STEP 1: Template verification...")
-                        
-                        # Download template
-                        template_path = os.path.join(tmp_dir, f"template_{icon_det.icon_template_id}.png")
-                        if not os.path.exists(template_path):
-                            self.storage.download_file(template_url, template_path)
-                        
-                        # Create icon verification crop with bounding box
-                        icon_verification_crop = self._create_icon_verification_crop(
-                            image, center, bbox
-                        )
-                        
-                        # Save crops for LLM
-                        icon_crop_path = os.path.join(tmp_dir, f"icon_{icon_det.id}_verify.png")
-                        cv2.imwrite(icon_crop_path, icon_verification_crop)
-                        
-                        # Query LLM for template verification
-                        template_prompt = self._create_template_verification_prompt()
-                        
-                        try:
-                            verification_result = self.llm._invoke_with_template_comparison(
-                                template_prompt, template_path, icon_crop_path, TemplateVerificationResult
-                            )
-                            stats["api_calls_made"] += 1
-                            
-                            if not verification_result.is_match:
-                                print(f"         ❌ Template verification FAILED: {verification_result.reasoning}")
-                                icons_rejected += 1
-                                continue
-                            
-                            print(f"         ✅ Template verified (conf={verification_result.confidence})")
-                            
-                        except Exception as e:
-                            print(f"         ⚠️ Template verification error: {e}, proceeding anyway...")
-                            stats["api_calls_made"] += 1
-                    
-                    # STEP 2: Find matching label
-                    print(f"         STEP 2: Finding matching label...")
-                    
-                    # Create padded crop for label search
-                    crop, crop_info = self._create_padded_crop(
-                        image, center, padding_stats, is_icon=True
-                    )
-
-                    # Save crop
-                    crop_path = os.path.join(tmp_dir, f"icon_{icon_det.id}_label_search.png")
-                    cv2.imwrite(crop_path, crop)
-
-                    # Create prompt and query LLM
-                    prompt = self._create_icon_matching_prompt(icon_name, available_tags)
-
-                    try:
-                        result = self.llm._invoke_with_structured_output(
-                            prompt, crop_path, IconMatchResult
-                        )
-                        stats["api_calls_made"] += 1
-
-                        if not result.match_found or not result.matched_tag:
-                            print(f"         No match found: {result.reasoning}")
-                            continue
-
-                        matched_tag = result.matched_tag
-                        
-                        # For LLM-verified tags, we don't need to find a physical tag detection
-                        # The LLM directly reads the label from the image
-                        # We just store the label text with the match
-                        
-                        # Update match with LLM-assigned label
-                        # No label_detection_id needed - we store the label text directly
-                        match.llm_assigned_label = matched_tag
-                        match.distance = 0.0  # No physical distance when LLM reads label
-                        match.match_confidence = 0.85 if result.confidence == "high" else 0.70 if result.confidence == "medium" else 0.55
-                        match.match_method = "llm_matched"
-                        match.match_status = "matched"
-                        self.db.add(match)
-
-                        used_icon_ids.add(icon_det.id)
-                        stats["icons_matched"] += 1
-
-                        print(
-                            f"         ✅ MATCHED to '{matched_tag}' "
-                            f"(conf={result.confidence}, LLM-assigned)"
-                        )
-
-                    except Exception as e:
-                        print(f"         Error: {e}")
-                        stats["api_calls_made"] += 1
-
-            # PHASE 2: Match unassigned tags to icons
-            remaining_unmatched = [
-                m for m in unmatched_icons
-                if m.icon_detection and m.icon_detection.id not in used_icon_ids
-            ]
-
-            if unassigned_tags and remaining_unmatched:
-                print(f"\n   PHASE 2: Matching unassigned tags to icons")
-
-                # Get matched icons for overlay
-                matched_icons = [
-                    m.icon_detection for m in all_matches
-                    if m.match_status == "matched" and m.icon_detection
-                ]
-
-                for tag_det in unassigned_tags:
-                    if tag_det.id in [m.label_detection_id for m in all_matches if m.label_detection_id]:
-                        continue
-
-                    tag_name = (
-                        tag_det.label_template.legend_item.label_text
-                        if tag_det.label_template and tag_det.label_template.legend_item
-                        else "Unknown"
-                    )
-
-                    if tag_name in used_tags:
-                        continue
-
-                    center = (int(tag_det.center[0]), int(tag_det.center[1]))
-                    print(f"\n      Tag '{tag_name}' at {center}")
-
-                    # Download page image
-                    page_path = os.path.join(tmp_dir, f"page_{tag_det.page_id}.png")
-                    if not os.path.exists(page_path):
-                        self.storage.download_file(tag_det.page.image_url, page_path)
-
-                    image = cv2.imread(page_path)
-                    if image is None:
-                        continue
-
-                    # Create padded crop
-                    crop, crop_info = self._create_padded_crop(
-                        image, center, padding_stats, is_icon=False
-                    )
-
-                    # Overlay matched icons
-                    crop = self._overlay_matched_icons(crop, crop_info, matched_icons)
-
-                    # Save crop
-                    crop_path = os.path.join(tmp_dir, f"tag_{tag_det.id}_crop.png")
-                    cv2.imwrite(crop_path, crop)
-
-                    # Create prompt and query LLM
-                    remaining_icon_types = list(set(
-                        m.icon_detection.icon_template.legend_item.description
-                        for m in remaining_unmatched
+                    # Find closest unmatched icon of this type
+                    candidate_matches = [
+                        m for m in unmatched_icons
                         if m.icon_detection
                         and m.icon_detection.icon_template
                         and m.icon_detection.icon_template.legend_item
+                        and m.icon_detection.icon_template.legend_item.description == matched_icon_type
                         and m.icon_detection.id not in used_icon_ids
-                    ))
+                    ]
 
-                    if not remaining_icon_types:
-                        print(f"         No remaining icon types")
+                    if not candidate_matches:
+                        print(f"         No available icons of type '{matched_icon_type}'")
                         continue
 
-                    prompt = self._create_tag_matching_prompt(tag_name, remaining_icon_types)
+                    # Find closest
+                    tag_center = np.array(center)
+                    closest_match = None
+                    closest_dist = float("inf")
 
-                    try:
-                        result = self.llm._invoke_with_structured_output(
-                            prompt, crop_path, TagMatchResult
-                        )
-                        stats["api_calls_made"] += 1
+                    for m in candidate_matches:
+                        icon_center = np.array(m.icon_detection.center)
+                        dist = np.sqrt(np.sum((icon_center - tag_center) ** 2))
+                        if dist < closest_dist:
+                            closest_dist = dist
+                            closest_match = m
 
-                        if not result.match_found or not result.matched_icon_type:
-                            print(f"         No match found: {result.reasoning}")
-                            continue
+                    if not closest_match:
+                        continue
 
-                        matched_icon_type = result.matched_icon_type
-                        if matched_icon_type not in remaining_icon_types:
-                            print(f"         Invalid icon type: {matched_icon_type}")
-                            continue
+                    # Update match
+                    closest_match.label_detection_id = tag_det.id
+                    closest_match.distance = float(closest_dist)
+                    closest_match.match_confidence = 0.80
+                    closest_match.match_method = "llm_icon_for_tag"
+                    closest_match.match_status = "matched"
+                    self.db.add(closest_match)
 
-                        # Find closest unmatched icon of this type
-                        candidate_matches = [
-                            m for m in remaining_unmatched
-                            if m.icon_detection
-                            and m.icon_detection.icon_template
-                            and m.icon_detection.icon_template.legend_item
-                            and m.icon_detection.icon_template.legend_item.description == matched_icon_type
-                            and m.icon_detection.id not in used_icon_ids
-                        ]
+                    used_tags.add(tag_name)
+                    used_icon_ids.add(closest_match.icon_detection.id)
+                    stats["tags_matched"] += 1
 
-                        if not candidate_matches:
-                            print(f"         No available icons of type '{matched_icon_type}'")
-                            continue
+                    print(
+                        f"         ✅ MATCHED to icon ID={closest_match.icon_detection.id} "
+                        f"(conf={result.confidence}, dist={closest_dist:.1f}px)"
+                    )
 
-                        # Find closest
-                        tag_center = np.array(center)
-                        closest_match = None
-                        closest_dist = float("inf")
-
-                        for m in candidate_matches:
-                            icon_center = np.array(m.icon_detection.center)
-                            dist = np.sqrt(np.sum((icon_center - tag_center) ** 2))
-                            if dist < closest_dist:
-                                closest_dist = dist
-                                closest_match = m
-
-                        if not closest_match:
-                            continue
-
-                        # Update match
-                        closest_match.label_detection_id = tag_det.id
-                        closest_match.distance = float(closest_dist)
-                        closest_match.match_confidence = 0.80
-                        closest_match.match_method = "llm_matched"
-                        closest_match.match_status = "matched"
-                        self.db.add(closest_match)
-
-                        used_tags.add(tag_name)
-                        used_icon_ids.add(closest_match.icon_detection.id)
-                        stats["tags_matched"] += 1
-
-                        print(
-                            f"         MATCHED to icon ID={closest_match.icon_detection.id} "
-                            f"(conf={result.confidence}, dist={closest_dist:.1f}px)"
-                        )
-
-                    except Exception as e:
-                        print(f"         Error: {e}")
-                        stats["api_calls_made"] += 1
+                except Exception as e:
+                    print(f"         Error: {e}")
+                    stats["api_calls_made"] += 1
 
         self.db.commit()
 
-        # Add rejected count to stats
-        stats["icons_rejected"] = icons_rejected
-
         print(f"\n{'='*60}")
-        print(f"LLM MATCHING COMPLETE")
-        print(f"   Icons matched: {stats['icons_matched']}")
-        print(f"   Icons rejected (template mismatch): {icons_rejected}")
+        print(f"PHASE 6 COMPLETE")
+        print(f"   Tags processed: {stats['total_unassigned_tags']}")
         print(f"   Tags matched: {stats['tags_matched']}")
         print(f"   API calls made: {stats['api_calls_made']}")
         print(f"{'='*60}")
 
         return stats
+
+    def match_unmatched_items(
+        self,
+        project: Project,
+        save_crops: bool = False,
+    ) -> Dict:
+        """
+        Match unmatched icons and tags using LLM (backward compatibility).
+        
+        This method calls both Phase 5 and Phase 6 sequentially.
+        For new implementations, use the separate methods:
+        - match_tags_for_unlabeled_icons() for Phase 5
+        - match_icons_for_unlabeled_tags() for Phase 6
+
+        Args:
+            project: Project to process
+            save_crops: Whether to save crop images for debugging
+
+        Returns:
+            Combined statistics about matching results
+        """
+        print(f"\n{'='*60}")
+        print(f"LLM-BASED ICON-TAG MATCHING (COMBINED)")
+        print(f"{'='*60}")
+
+        # Run Phase 5: Tag matching for unlabeled icons
+        phase5_stats = self.match_tags_for_unlabeled_icons(project, save_crops)
+        
+        # Run Phase 6: Icon matching for unlabeled tags
+        phase6_stats = self.match_icons_for_unlabeled_tags(project, save_crops)
+
+        # Combine statistics
+        combined_stats = {
+            "total_unmatched_icons": phase5_stats["total_unmatched_icons"],
+            "total_unassigned_tags": phase6_stats["total_unassigned_tags"],
+            "icons_matched": phase5_stats["icons_matched"],
+            "icons_rejected": phase5_stats["icons_rejected"],
+            "tags_matched": phase6_stats["tags_matched"],
+            "api_calls_made": phase5_stats["api_calls_made"] + phase6_stats["api_calls_made"],
+        }
+
+        print(f"\n{'='*60}")
+        print(f"LLM MATCHING COMPLETE (COMBINED)")
+        print(f"   Icons matched: {combined_stats['icons_matched']}")
+        print(f"   Icons rejected: {combined_stats['icons_rejected']}")
+        print(f"   Tags matched: {combined_stats['tags_matched']}")
+        print(f"   Total API calls: {combined_stats['api_calls_made']}")
+        print(f"{'='*60}")
+
+        return combined_stats
 
 
 def get_llm_matcher_service(

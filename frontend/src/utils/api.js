@@ -74,9 +74,17 @@ export const api = {
   verifyLabelDetections: (projectId, batchSize = 10) => 
     axios.post(`${API_BASE}/labels/projects/${projectId}/verify-label-detections`, { batch_size: batchSize }),
   
-  // LLM Matching for unmatched items
+  // LLM Matching for unmatched items (combined - backward compatible)
   llmMatchUnmatched: (projectId) => 
     axios.post(`${API_BASE}/icons/projects/${projectId}/llm-match-unmatched`),
+  
+  // Phase 5: Tag matching for unlabeled icons
+  matchTagsForIcons: (projectId) => 
+    axios.post(`${API_BASE}/icons/projects/${projectId}/match-tags-for-icons`),
+  
+  // Phase 6: Icon matching for unlabeled tags
+  matchIconsForTags: (projectId) => 
+    axios.post(`${API_BASE}/icons/projects/${projectId}/match-icons-for-tags`),
   
   // Tag overlap resolution
   resolveTagOverlaps: (projectId) => 

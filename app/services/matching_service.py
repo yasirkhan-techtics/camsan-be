@@ -30,22 +30,24 @@ class MatchingService:
     def match_icons_to_labels(
         self,
         project: Project,
-        resolve_overlaps: bool = True,
+        resolve_overlaps: bool = False,
     ) -> List[IconLabelMatch]:
         """
         Match icons to labels using distance-based matching.
-        Optionally resolves tag overlaps automatically.
+        
+        Note: Overlap resolution is now a separate phase and should be called
+        before this method via the /resolve-tag-overlaps endpoint.
         
         Args:
             project: Project to process
-            resolve_overlaps: Whether to automatically resolve tag overlaps
+            resolve_overlaps: Whether to automatically resolve tag overlaps (default: False)
             
         Returns:
             List of IconLabelMatch records
         """
         print(f"[MATCHING] Starting matching for project {project.id}")
         
-        # Step 1: Resolve tag overlaps if enabled and service is available
+        # Step 1: Resolve tag overlaps if explicitly requested (disabled by default)
         if resolve_overlaps and self.tag_overlap_service:
             print(f"[MATCHING] Resolving tag overlaps before matching...")
             overlap_result = self.tag_overlap_service.resolve_overlaps(project)

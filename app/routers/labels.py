@@ -26,6 +26,35 @@ from services.llm_verification_service import (
 )
 from services.tag_overlap_service import TagOverlapService, get_tag_overlap_service
 from utils.state_manager import StateManager
+from sqlalchemy.orm import selectinload
+
+
+def _detection_to_response(det: LabelDetection) -> LabelDetectionResponse:
+    """Convert LabelDetection to response with tag_name from template."""
+    # Get tag_name: first try template.tag_name, then fallback to legend_item.label_text
+    tag_name = None
+    if det.label_template:
+        tag_name = det.label_template.tag_name
+        # Fallback to legend_item.label_text if tag_name not set
+        if not tag_name and det.label_template.legend_item:
+            tag_name = det.label_template.legend_item.label_text
+    
+    data = {
+        "id": det.id,
+        "project_id": det.project_id,
+        "label_template_id": det.label_template_id,
+        "page_id": det.page_id,
+        "bbox": det.bbox,
+        "center": det.center,
+        "confidence": det.confidence,
+        "scale": det.scale,
+        "rotation": det.rotation,
+        "verification_status": det.verification_status,
+        "tag_name": tag_name,
+        "created_at": det.created_at,
+        "updated_at": det.updated_at,
+    }
+    return LabelDetectionResponse(**data)
 
 router = APIRouter()
 
@@ -157,7 +186,15 @@ def detect_labels(
     if current_index <= target_index:
         StateManager(db).transition(project, "labeling_in_progress", "label_detection_complete")
     
-    return [LabelDetectionResponse.model_validate(det) for det in detections]
+    # Re-fetch with template and legend_item relationships loaded
+    detections = (
+        db.query(LabelDetection)
+        .filter(LabelDetection.project_id == project_id)
+        .options(selectinload(LabelDetection.label_template).selectinload(LabelTemplate.legend_item))
+        .order_by(LabelDetection.created_at)
+        .all()
+    )
+    return [_detection_to_response(det) for det in detections]
 
 
 @router.get(
@@ -168,10 +205,11 @@ def list_label_detections(project_id: UUID, db: Session = Depends(get_db)):
     detections = (
         db.query(LabelDetection)
         .filter(LabelDetection.project_id == project_id)
+        .options(selectinload(LabelDetection.label_template).selectinload(LabelTemplate.legend_item))
         .order_by(LabelDetection.created_at)
         .all()
     )
-    return [LabelDetectionResponse.model_validate(det) for det in detections]
+    return [_detection_to_response(det) for det in detections]
 
 
 @router.get("/detections", response_model=List[LabelDetectionResponse])
@@ -181,7 +219,9 @@ def get_label_detections(
     db: Session = Depends(get_db),
 ):
     """Get label detections filtered by legend_item_id or project_id."""
-    query = db.query(LabelDetection)
+    query = db.query(LabelDetection).options(
+        selectinload(LabelDetection.label_template).selectinload(LabelTemplate.legend_item)
+    )
     
     if legend_item_id:
         query = query.join(LabelTemplate).filter(LabelTemplate.legend_item_id == legend_item_id)
@@ -189,7 +229,7 @@ def get_label_detections(
         query = query.filter(LabelDetection.project_id == project_id)
     
     detections = query.all()
-    return [LabelDetectionResponse.model_validate(d) for d in detections]
+    return [_detection_to_response(d) for d in detections]
 
 
 @router.post("/detections", response_model=LabelDetectionResponse, status_code=201)
@@ -325,7 +365,7 @@ def resolve_tag_overlaps(
     
     return TagOverlapResolutionResponse(
         total_tags=result["total_tags"],
-        overlapping_pairs_found=result["overlapping_pairs_found"],
+        overlapping_clusters_found=result["overlapping_clusters_found"],
         tags_removed=result["tags_removed"],
         tags_kept=result["tags_kept"],
     )

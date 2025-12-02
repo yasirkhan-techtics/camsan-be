@@ -16,4 +16,4 @@ numpy
 opencv-python
 matplotlib
 typing-extensions
-
+scikit-learn

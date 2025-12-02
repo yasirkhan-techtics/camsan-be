@@ -29,7 +29,7 @@ class ElectricalSymbolDetector:
                  scales: List[float] = None,
                  rotations: List[float] = None,
                  threshold: float = 0.7,
-                 nms_threshold: float = 0.3):
+                 nms_threshold: float = 0.2):
         """
         Initialize the detector.
 

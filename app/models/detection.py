@@ -83,6 +83,8 @@ class IconDetection(BaseModel):
 
     icon_template = relationship("IconTemplate", back_populates="detections")
     page = relationship("PDFPage")
+    # Cascade delete matches when detection is deleted
+    matches = relationship("IconLabelMatch", back_populates="icon_detection", cascade="all, delete-orphan")
 
 
 class LabelDetection(BaseModel):
@@ -106,6 +108,8 @@ class LabelDetection(BaseModel):
 
     label_template = relationship("LabelTemplate", back_populates="detections")
     page = relationship("PDFPage")
+    # Cascade delete matches when detection is deleted
+    matches = relationship("IconLabelMatch", back_populates="label_detection", cascade="all, delete-orphan")
 
 
 class IconLabelMatch(BaseModel):
@@ -133,7 +137,7 @@ class IconLabelMatch(BaseModel):
     # This allows matching without requiring a physical LabelDetection record
     llm_assigned_label = Column(Text, nullable=True)
 
-    icon_detection = relationship("IconDetection", lazy="joined")
-    label_detection = relationship("LabelDetection", lazy="joined")
+    icon_detection = relationship("IconDetection", back_populates="matches", lazy="joined")
+    label_detection = relationship("LabelDetection", back_populates="matches", lazy="joined")
 
 

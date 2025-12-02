@@ -93,6 +93,7 @@ class LabelDetectionResponse(BaseModel):
     scale: float
     rotation: int
     verification_status: str
+    tag_name: Optional[str] = None  # Tag text (e.g., "CL1", "CF2") for display
     created_at: datetime
     updated_at: datetime
 
@@ -177,7 +178,7 @@ class LLMVerificationResponse(BaseModel):
 
 class TagOverlapResolutionResponse(BaseModel):
     total_tags: int
-    overlapping_pairs_found: int
+    overlapping_clusters_found: int
     tags_removed: int
     tags_kept: int
 
@@ -188,11 +189,29 @@ class LLMMatcherRequest(BaseModel):
 
 
 class LLMMatcherResponse(BaseModel):
+    """Combined response for backward compatibility (both phases)"""
     total_unmatched_icons: int
     total_unassigned_tags: int
     icons_matched: int
     tags_matched: int
     api_calls_made: int
+
+
+# Phase 5: Tag matching for unlabeled icons
+class TagMatchingForIconsResponse(BaseModel):
+    """Response for Phase 5: Tag matching for unlabeled icons"""
+    total_unmatched_icons: int = Field(description="Total icons without assigned labels")
+    icons_matched: int = Field(description="Icons successfully matched to tags by LLM")
+    icons_rejected: int = Field(description="Icons rejected due to template verification failure")
+    api_calls_made: int = Field(description="Number of LLM API calls made")
+
+
+# Phase 6: Icon matching for unlabeled tags
+class IconMatchingForTagsResponse(BaseModel):
+    """Response for Phase 6: Icon matching for unlabeled tags"""
+    total_unassigned_tags: int = Field(description="Total tags without assigned icons")
+    tags_matched: int = Field(description="Tags successfully matched to icons by LLM")
+    api_calls_made: int = Field(description="Number of LLM API calls made")
 
 
 # LLM Verification Item Response Schemas

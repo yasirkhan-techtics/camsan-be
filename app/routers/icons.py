@@ -14,12 +14,14 @@ from schemas.detection import (
     IconBBoxRequest,
     IconDetectionResponse,
     IconLabelMatchResponse,
+    IconMatchingForTagsResponse,
     IconTemplateBatchRequest,
     IconTemplateResponse,
     LLMMatcherRequest,
     LLMMatcherResponse,
     LLMVerificationRequest,
     LLMVerificationResponse,
+    TagMatchingForIconsResponse,
     UpdateDetectionRequest,
 )
 from services.batch_service import BatchService, get_batch_service
@@ -336,10 +338,12 @@ def llm_match_unmatched(
     matcher_service: LLMMatcherService = Depends(get_llm_matcher_service),
 ):
     """
-    Use LLM to match unmatched icons and unassigned tags.
+    Use LLM to match unmatched icons and unassigned tags (combined - backward compatibility).
     
-    This endpoint should be called after distance-based matching to find
-    matches for icons/tags that couldn't be matched automatically.
+    This endpoint runs both Phase 5 and Phase 6 together.
+    For separate control, use:
+    - /match-tags-for-icons (Phase 5)
+    - /match-icons-for-tags (Phase 6)
     """
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
@@ -347,7 +351,7 @@ def llm_match_unmatched(
     
     save_crops = payload.save_crops if payload else False
     
-    print(f"🔍 [LLM MATCH] Starting LLM matching for project: {project_id}")
+    print(f"🔍 [LLM MATCH] Starting combined LLM matching for project: {project_id}")
     result = matcher_service.match_unmatched_items(project, save_crops=save_crops)
     print(f"✅ [LLM MATCH] LLM matching complete!")
     
@@ -355,6 +359,83 @@ def llm_match_unmatched(
         total_unmatched_icons=result["total_unmatched_icons"],
         total_unassigned_tags=result["total_unassigned_tags"],
         icons_matched=result["icons_matched"],
+        tags_matched=result["tags_matched"],
+        api_calls_made=result["api_calls_made"],
+    )
+
+
+@router.post(
+    "/projects/{project_id}/match-tags-for-icons",
+    response_model=TagMatchingForIconsResponse,
+)
+def match_tags_for_unlabeled_icons(
+    project_id: UUID,
+    payload: LLMMatcherRequest = None,
+    db: Session = Depends(get_db),
+    matcher_service: LLMMatcherService = Depends(get_llm_matcher_service),
+):
+    """
+    PHASE 5: Use LLM to find matching tags for unlabeled icons.
+    
+    This endpoint processes icons that have no assigned label and uses LLM
+    to find matching tags by analyzing the surrounding area.
+    
+    Should be called after:
+    - Basic distance-based matching (match-icons-labels)
+    
+    Flow: Raw Detection → LLM Verification → Overlap Removal → Basic Matching → **This Step**
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    
+    save_crops = payload.save_crops if payload else False
+    
+    print(f"🔍 [PHASE 5] Starting tag matching for unlabeled icons: {project_id}")
+    result = matcher_service.match_tags_for_unlabeled_icons(project, save_crops=save_crops)
+    print(f"✅ [PHASE 5] Tag matching complete!")
+    
+    return TagMatchingForIconsResponse(
+        total_unmatched_icons=result["total_unmatched_icons"],
+        icons_matched=result["icons_matched"],
+        icons_rejected=result["icons_rejected"],
+        api_calls_made=result["api_calls_made"],
+    )
+
+
+@router.post(
+    "/projects/{project_id}/match-icons-for-tags",
+    response_model=IconMatchingForTagsResponse,
+)
+def match_icons_for_unlabeled_tags(
+    project_id: UUID,
+    payload: LLMMatcherRequest = None,
+    db: Session = Depends(get_db),
+    matcher_service: LLMMatcherService = Depends(get_llm_matcher_service),
+):
+    """
+    PHASE 6: Use LLM to find matching icons for unlabeled tags.
+    
+    This endpoint processes tags that have no assigned icon and uses LLM
+    to find matching icons by analyzing the surrounding area.
+    
+    Should be called after:
+    - Tag matching for icons (match-tags-for-icons)
+    
+    Flow: Raw Detection → LLM Verification → Overlap Removal → Basic Matching → Tag Matching → **This Step**
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    
+    save_crops = payload.save_crops if payload else False
+    
+    print(f"🔍 [PHASE 6] Starting icon matching for unlabeled tags: {project_id}")
+    result = matcher_service.match_icons_for_unlabeled_tags(project, save_crops=save_crops)
+    print(f"✅ [PHASE 6] Icon matching complete!")
+    
+    return IconMatchingForTagsResponse(
+        total_unassigned_tags=result["total_unassigned_tags"],
         tags_matched=result["tags_matched"],
         api_calls_made=result["api_calls_made"],
     )
