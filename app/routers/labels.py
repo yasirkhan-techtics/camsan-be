@@ -19,6 +19,7 @@ from schemas.detection import (
     TagOverlapResolutionResponse,
     UpdateDetectionRequest,
 )
+from services.cascade_reset_service import cascade_reset_from_stage
 from services.label_service import LabelService, get_label_service
 from services.llm_verification_service import (
     LLMVerificationService,
@@ -50,6 +51,7 @@ def _detection_to_response(det: LabelDetection) -> LabelDetectionResponse:
         "scale": det.scale,
         "rotation": det.rotation,
         "verification_status": det.verification_status,
+        "rejection_source": det.rejection_source,  # "overlap_removal" or "llm_verification"
         "tag_name": tag_name,
         "created_at": det.created_at,
         "updated_at": det.updated_at,
@@ -174,6 +176,9 @@ def detect_labels(
     if not project:
         print(f"❌ [LABEL DETECTION] Project not found: {project_id}")
         raise HTTPException(status_code=404, detail="Project not found.")
+    
+    # Cascade reset: Clear only label detections (not icons)
+    cascade_reset_from_stage(db, project_id, stage=0, detection_type="labels")
     
     print(f"🔍 [LABEL DETECTION] Starting label detection for project: {project_id}")
     detections = label_service.detect_labels(project)
@@ -322,6 +327,9 @@ def verify_label_detections(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     
+    # Cascade reset: Clear only label verification (not icons)
+    cascade_reset_from_stage(db, project_id, stage=2, detection_type="labels")
+    
     batch_size = payload.batch_size if payload else 10
     
     print(f"🔍 [LLM VERIFY] Starting label verification for project: {project_id}")
@@ -358,6 +366,9 @@ def resolve_tag_overlaps(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
+    
+    # Cascade reset: Clear downstream data (Stage 1 - Overlap Removal)
+    cascade_reset_from_stage(db, project_id, stage=1)
     
     print(f"🔍 [OVERLAP] Starting tag overlap resolution for project: {project_id}")
     result = overlap_service.resolve_overlaps(project)

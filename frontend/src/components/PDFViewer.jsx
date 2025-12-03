@@ -332,6 +332,7 @@ const PDFViewer = ({
                       onSelect={() => onBboxSelect && onBboxSelect(box.id)}
                       score={box.confidence}
                       label={box.label}
+                      overlappingTags={box.overlappingTags}
                     />
                   );
                 })}

@@ -31,7 +31,7 @@ class TagOverlapService:
         db: Session,
         storage_service: StorageService,
         llm_service: LLMService,
-        overlap_threshold: float = 0.5,  # 50% overlap threshold
+        overlap_threshold: float = 0.20,  # 15% overlap threshold (lowered to catch more overlaps)
         batch_size: int = 10,
     ):
         self.db = db
@@ -379,14 +379,14 @@ class TagOverlapService:
             options = " OR ".join([f'"{tag}"' for tag in cluster["tags"]])
             pairs_desc.append(f"  {cluster['sr_no']}. Options: {options}")
 
-        prompt = f"""You are analyzing a table with {len(clusters)} overlapping tag/icon groups.
+        prompt = f"""You are analyzing a table with {len(clusters)} overlapping text label detections.
 
 Each row shows:
-- Sr. No: Identification number
-- Overlapping Image: The union crop of overlapping detections at the same location
-- Tag Options: Multiple possible tag names detected at this location
+- Sr. No: Row identification number
+- Overlapping Image: Cropped region showing overlapping text labels
+- Tag Options: The possible tag names (text labels) that were detected at this location
 
-Your task: For each row, determine which tag option correctly identifies the content in the image.
+Your task: Look at the TEXT visible in each image and select which tag option matches what you see.
 
 Here are the groups:
 {chr(10).join(pairs_desc)}
@@ -394,17 +394,18 @@ Here are the groups:
 Provide your answer as JSON with this exact structure:
 {{
   "classifications": [
-    {{"sr_no": 1, "selected_tag": "exact_tag_name", "confidence": "high"}},
-    {{"sr_no": 2, "selected_tag": "exact_tag_name", "confidence": "medium"}},
+    {{"sr_no": 1, "tag_found": true, "selected_tag": "exact_tag_name"}},
+    {{"sr_no": 2, "tag_found": true, "selected_tag": "exact_tag_name"}},
     ...
   ]
 }}
 
 Rules:
-1. Classify ALL {len(clusters)} groups in the table
-2. For each group, choose ONLY from its given options
-3. Use EXACT tag names (case-sensitive)
-4. Base decisions on visual content only
+1. Classify ALL {len(clusters)} rows
+2. READ the text in each image and match it to one of the given options
+3. Use EXACT tag names from the options (case-sensitive)
+4. Set tag_found to true and selected_tag to your choice (you should almost always find a match)
+5. Set tag_found to false if the tag image does not has exact same tag from tag options.
 """
 
         try:
@@ -415,8 +416,11 @@ Rules:
             classifications = {}
             if result and result.classifications:
                 for item in result.classifications:
-                    classifications[item.sr_no] = item.selected_tag
-                    print(f"         LLM: Sr.{item.sr_no} -> '{item.selected_tag}' ({item.confidence})")
+                    if item.tag_found and item.selected_tag:
+                        classifications[item.sr_no] = item.selected_tag
+                        print(f"         LLM: Sr.{item.sr_no} -> '{item.selected_tag}' (tag_found=True)")
+                    else:
+                        print(f"         LLM: Sr.{item.sr_no} -> No tag found")
 
             return classifications
 
@@ -559,13 +563,14 @@ Rules:
 
         pairs_text = "\n".join(pairs_info)
 
-        prompt = f"""You are analyzing a table with {len(batch_data)} overlapping tag/icon pairs.
-Each row shows:
-- Sr. No: Identification number
-- Overlapping Image: The union crop of two overlapping detections
-- Tags to Classify: Two possible tag names (Option 1 and Option 2)
+        prompt = f"""You are analyzing a table with {len(batch_data)} overlapping text label detections.
 
-Your task: For each row, determine which tag option correctly identifies the content in the image.
+Each row shows:
+- Sr. No: Row identification number  
+- Overlapping Image: Cropped region showing overlapping text labels
+- Tags to Classify: Two possible tag names detected at this location
+
+Your task: Look at the TEXT visible in each image and select which tag option matches what you see.
 
 Here are the pairs:
 {pairs_text}
@@ -573,17 +578,18 @@ Here are the pairs:
 Provide your answer as JSON with this exact structure:
 {{
   "classifications": [
-    {{"sr_no": 1, "selected_tag": "exact_tag_name", "confidence": "high"}},
-    {{"sr_no": 2, "selected_tag": "exact_tag_name", "confidence": "medium"}},
+    {{"sr_no": 1, "tag_found": true, "selected_tag": "exact_tag_name"}},
+    {{"sr_no": 2, "tag_found": true, "selected_tag": "exact_tag_name"}},
     ...
   ]
 }}
 
 Rules:
-1. Classify ALL {len(batch_data)} pairs in the table
-2. For each pair, choose ONLY from its two given options
-3. Use EXACT tag names (case-sensitive)
-4. Base decisions on visual content only"""
+1. Classify ALL {len(batch_data)} rows
+2. READ the text in each image and match it to one of the two given options
+3. Use EXACT tag names from the options (case-sensitive)
+4. Set tag_found to true and selected_tag to your choice (you should almost always find a match)
+5. Set tag_found to false if the tag image does not has exact same tag from tag options."""
 
         print(f"      Sending batch of {len(batch_data)} pairs to LLM...")
 
@@ -595,12 +601,12 @@ Rules:
             classifications = {}
             for item in response.classifications:
                 sr_no = item.sr_no
-                selected_tag = item.selected_tag
-                confidence = item.confidence
-
-                if sr_no and selected_tag:
-                    classifications[sr_no] = selected_tag
-                    print(f"      Sr.{sr_no}: '{selected_tag}' (confidence: {confidence})")
+                
+                if item.tag_found and item.selected_tag:
+                    classifications[sr_no] = item.selected_tag
+                    print(f"      Sr.{sr_no}: '{item.selected_tag}' (tag_found=True)")
+                else:
+                    print(f"      Sr.{sr_no}: No tag found")
 
             if len(classifications) != len(batch_data):
                 print(
@@ -632,8 +638,22 @@ Rules:
         print(f"TAG OVERLAP RESOLUTION")
         print(f"{'='*60}")
 
-        # Load non-rejected label detections (pending or verified)
-        # This works whether overlap removal runs before or after LLM verification
+        # Reset only overlap_removal rejected tags back to pending for fresh overlap analysis
+        # This allows re-running overlap removal multiple times without affecting LLM rejections
+        reset_count = (
+            self.db.query(LabelDetection)
+            .filter(
+                LabelDetection.project_id == project.id,
+                LabelDetection.verification_status == "rejected",
+                LabelDetection.rejection_source == "overlap_removal",
+            )
+            .update({"verification_status": "pending", "rejection_source": None})
+        )
+        if reset_count > 0:
+            self.db.commit()
+            print(f"   Reset {reset_count} previously overlap-removed tags to pending")
+
+        # Load all non-rejected label detections (now includes reset ones)
         query = (
             self.db.query(LabelDetection)
             .filter(
@@ -689,8 +709,8 @@ Rules:
             print(f"      Found {len(overlapping_clusters)} overlap clusters")
             total_clusters_found += len(overlapping_clusters)
 
-            # Download page image
-            with tempfile.TemporaryDirectory() as tmp_dir:
+            # Download page image (ignore_cleanup_errors for Windows compatibility)
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
                 page = page_detections[0].page
                 page_path = os.path.join(tmp_dir, f"page_{page_id}.png")
                 self.storage.download_file(page.image_url, page_path)
@@ -713,18 +733,23 @@ Rules:
                     cluster_tags = [get_tag_name(det, i) for det, i in zip(cluster_dets, cluster_indices)]
                     unique_tags = list(set(cluster_tags))
 
-                    print(f"\n      Cluster {cluster_idx + 1}: {len(cluster_dets)} detections, tags: {cluster_tags}")
+                    print(f"\n      Cluster {cluster_idx + 1}: {len(cluster_dets)} detections")
+                    for cd, ct in zip(cluster_dets, cluster_tags):
+                        print(f"         - '{ct}' conf={cd.confidence:.3f} bbox={cd.bbox} id={cd.id}")
 
                     # SAME TAG CLUSTER: Keep highest confidence, remove rest
                     if len(unique_tags) == 1:
                         # All same tag - keep highest confidence
                         best_det = max(cluster_dets, key=lambda d: d.confidence)
+                        removed_ids = []
                         for det in cluster_dets:
                             if det.id != best_det.id:
                                 ids_to_remove.add(det.id)
+                                removed_ids.append(str(det.id)[:8])
                                 same_tag_removed += 1
                                 total_removed += 1
-                        print(f"         Same tag '{unique_tags[0]}': kept best (conf={best_det.confidence:.3f}), removed {len(cluster_dets) - 1} duplicates")
+                        print(f"         ✅ Same tag '{unique_tags[0]}': KEEPING best (conf={best_det.confidence:.3f}, id={str(best_det.id)[:8]})")
+                        print(f"         🗑️  REMOVING {len(cluster_dets) - 1} duplicates: {removed_ids}")
                         continue
 
                     # DIFFERENT TAG CLUSTER: Need LLM to decide
@@ -768,29 +793,31 @@ Rules:
                         selected_tag = classifications.get(sr_no)
 
                         if selected_tag and selected_tag in cluster_data["tag_to_dets"]:
-                            # Keep all detections of selected tag, remove all others
-                            keep_dets = cluster_data["tag_to_dets"][selected_tag]
-                            for det in cluster_data["detections"]:
-                                if det not in keep_dets:
-                                    ids_to_remove.add(det.id)
-                                    total_removed += 1
-                            print(f"         Cluster {sr_no}: Keep '{selected_tag}' ({len(keep_dets)} dets), remove {len(cluster_data['detections']) - len(keep_dets)} others")
-                        else:
-                            # No valid classification - keep highest confidence detection
-                            best_det = max(cluster_data["detections"], key=lambda d: d.confidence)
+                            # Keep ONLY the highest confidence detection of selected tag, remove all others
+                            selected_tag_dets = cluster_data["tag_to_dets"][selected_tag]
+                            best_det = max(selected_tag_dets, key=lambda d: d.confidence)
+                            
+                            # Remove all detections except the best one of the selected tag
                             for det in cluster_data["detections"]:
                                 if det.id != best_det.id:
                                     ids_to_remove.add(det.id)
                                     total_removed += 1
-                            print(f"         Cluster {sr_no}: No valid classification, kept highest confidence")
+                            print(f"         Cluster {sr_no}: Keep '{selected_tag}' best (conf={best_det.confidence:.3f}), remove {len(cluster_data['detections']) - 1} others")
+                        else:
+                            # No valid classification - remove ALL detections in this cluster
+                            for det in cluster_data["detections"]:
+                                ids_to_remove.add(det.id)
+                                total_removed += 1
+                            print(f"         Cluster {sr_no}: No valid classification, REMOVED ALL {len(cluster_data['detections'])} detections")
 
                 page_image.close()
 
-        # Update database - mark removed tags as rejected
+        # Update database - mark removed tags as rejected with overlap_removal source
         for det_id in ids_to_remove:
             det = self.db.query(LabelDetection).filter(LabelDetection.id == det_id).first()
             if det:
                 det.verification_status = "rejected"
+                det.rejection_source = "overlap_removal"
                 self.db.add(det)
 
         self.db.commit()

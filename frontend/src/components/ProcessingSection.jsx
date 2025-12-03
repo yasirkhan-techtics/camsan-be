@@ -101,7 +101,8 @@ const ProcessingSection = () => {
 
   // Aggregate legend items
   const legendItems = useMemo(() => {
-    return legendTables.flatMap(table => table.legend_items || []);
+    const tables = legendTables || [];
+    return tables.flatMap(table => table.legend_items || []);
   }, [legendTables]);
 
   // Refresh data on project change
@@ -114,66 +115,118 @@ const ProcessingSection = () => {
 
   // Filter detections based on current stage and filter
   const filteredIconDetections = useMemo(() => {
+    const icons = iconDetections || [];
     // Stage 0 (Raw Detection): Show ALL detections, no filtering
     if (currentStage === 0) {
-      return iconDetections;
+      return icons;
     }
     // Stage 1 (Overlap Removal): Use overlap filter
     if (currentStage === 1) {
-      if (overlapFilter === 'all') return iconDetections;
-      if (overlapFilter === 'removed') return iconDetections.filter(d => d.verification_status === 'rejected');
-      if (overlapFilter === 'kept') return iconDetections.filter(d => d.verification_status !== 'rejected');
+      if (overlapFilter === 'all') return icons;
+      if (overlapFilter === 'removed') return icons.filter(d => d.verification_status === 'rejected');
+      if (overlapFilter === 'kept') return icons.filter(d => d.verification_status !== 'rejected');
     }
     // Stage 2 (Verification) and others: Use verification filter
-    if (verificationFilter === 'all') return iconDetections;
-    return iconDetections.filter(d => d.verification_status === verificationFilter);
+    if (verificationFilter === 'all') return icons;
+    return icons.filter(d => d.verification_status === verificationFilter);
   }, [iconDetections, verificationFilter, overlapFilter, currentStage]);
 
   const filteredLabelDetections = useMemo(() => {
+    const labels = labelDetections || [];
     // Stage 0 (Raw Detection): Show ALL detections, no filtering
     if (currentStage === 0) {
-      return labelDetections;
+      return labels;
     }
     // Stage 1 (Overlap Removal): Use overlap filter
     if (currentStage === 1) {
-      if (overlapFilter === 'all') return labelDetections;
-      if (overlapFilter === 'removed') return labelDetections.filter(d => d.verification_status === 'rejected');
-      if (overlapFilter === 'kept') return labelDetections.filter(d => d.verification_status !== 'rejected');
+      if (overlapFilter === 'all') return labels;
+      if (overlapFilter === 'removed') return labels.filter(d => d.verification_status === 'rejected');
+      if (overlapFilter === 'kept') return labels.filter(d => d.verification_status !== 'rejected');
     }
     // Stage 2 (Verification) and others: Use verification filter
-    if (verificationFilter === 'all') return labelDetections;
-    return labelDetections.filter(d => d.verification_status === verificationFilter);
+    if (verificationFilter === 'all') return labels;
+    return labels.filter(d => d.verification_status === verificationFilter);
   }, [labelDetections, verificationFilter, overlapFilter, currentStage]);
 
   // Filter matches
   const filteredMatches = useMemo(() => {
-    if (matchFilter === 'all') return matches;
-    if (matchFilter === 'matched') return matches.filter(m => m.match_status === 'matched');
-    if (matchFilter === 'unmatched') return matches.filter(m => m.match_status !== 'matched');
-    if (matchFilter === 'llm_tag_for_icon') return matches.filter(m => m.match_method === 'llm_tag_for_icon');
-    if (matchFilter === 'llm_icon_for_tag') return matches.filter(m => m.match_method === 'llm_icon_for_tag');
-    return matches;
+    const matchList = matches || [];
+    if (matchFilter === 'all') return matchList;
+    if (matchFilter === 'matched') return matchList.filter(m => m.match_status === 'matched');
+    if (matchFilter === 'unmatched') return matchList.filter(m => m.match_status !== 'matched');
+    if (matchFilter === 'llm_tag_for_icon') return matchList.filter(m => m.match_method === 'llm_tag_for_icon');
+    if (matchFilter === 'llm_icon_for_tag') return matchList.filter(m => m.match_method === 'llm_icon_for_tag');
+    return matchList;
   }, [matches, matchFilter]);
 
-  // Get stage status counts
+  // Get stage status counts with detailed breakdown
   const stageCounts = useMemo(() => {
-    const iconVerified = iconDetections.filter(d => d.verification_status === 'verified').length;
-    const iconRejected = iconDetections.filter(d => d.verification_status === 'rejected').length;
-    const labelVerified = labelDetections.filter(d => d.verification_status === 'verified').length;
-    const labelRejected = labelDetections.filter(d => d.verification_status === 'rejected').length;
-    const matchedCount = matches.filter(m => m.match_status === 'matched').length;
-    const unmatchedCount = matches.filter(m => m.match_status !== 'matched').length;
+    // Safety checks for undefined arrays
+    const icons = iconDetections || [];
+    const labels = labelDetections || [];
+    const matchList = matches || [];
+    
+    // Icons breakdown
+    const iconTotal = icons.length;
+    const iconVerified = icons.filter(d => d.verification_status === 'verified').length;
+    const iconRejected = icons.filter(d => d.verification_status === 'rejected').length;
+    const iconPending = icons.filter(d => d.verification_status === 'pending').length;
+    
+    // Labels breakdown - separate overlap removal from LLM verification rejections
+    const labelTotal = labels.length;
+    const labelVerified = labels.filter(d => d.verification_status === 'verified').length;
+    
+    // Use rejection_source to distinguish between overlap removal and LLM verification rejections
+    const labelsRemovedByOverlap = labels.filter(d => 
+      d.verification_status === 'rejected' && d.rejection_source === 'overlap_removal'
+    ).length;
+    const labelsRejectedByLLM = labels.filter(d => 
+      d.verification_status === 'rejected' && d.rejection_source === 'llm_verification'
+    ).length;
+    const labelRejected = labels.filter(d => d.verification_status === 'rejected').length;
+    const labelPending = labels.filter(d => d.verification_status === 'pending').length;
+    
+    // Labels after overlap removal (not rejected by overlap removal - includes pending and verified)
+    const labelsAfterOverlap = labels.filter(d => 
+      d.rejection_source !== 'overlap_removal'
+    ).length;
+    
+    // Final counts (verified only - ready for matching)
+    const iconsFinal = iconVerified;
+    const labelsFinal = labelVerified;
+    
+    // Matching breakdown
+    const matchedCount = matchList.filter(m => m.match_status === 'matched').length;
+    const unmatchedIconsCount = matchList.filter(m => m.match_status === 'unmatched_icon').length;
+    const unassignedTagsCount = matchList.filter(m => m.match_status === 'unassigned_tag').length;
     
     return {
-      icons: iconDetections.length,
-      labels: labelDetections.length,
+      // Raw counts
+      icons: iconTotal,
+      labels: labelTotal,
+      
+      // Icon verification
       iconVerified,
       iconRejected,
+      iconPending,
+      iconsFinal,
+      
+      // Label verification (LLM only, not overlap removal)
       labelVerified,
       labelRejected,
+      labelsRejectedByLLM,
+      labelPending,
+      labelsFinal,
+      
+      // Overlap removal
+      labelsAfterOverlap,
+      labelsRemovedByOverlap,
+      
+      // Matching
       matched: matchedCount,
-      unmatched: unmatchedCount,
-      total: matches.length,
+      unmatchedIcons: unmatchedIconsCount,
+      unassignedTags: unassignedTagsCount,
+      total: matchList.length,
     };
   }, [iconDetections, labelDetections, matches]);
 
@@ -185,36 +238,102 @@ const ProcessingSection = () => {
     const boxes = [];
     const stage = STAGES[currentStage]?.id;
 
+    // Helper to get stage-specific color
+    const getDetectionColor = (det, isSelected) => {
+      if (isSelected) return '#3b82f6'; // Blue for selected
+      
+      // Stage-specific coloring
+      if (stage === 'detection') {
+        // Raw Detection: Neutral amber color for all (shows raw state)
+        return '#f59e0b';
+      } else if (stage === 'overlap') {
+        // Overlap Removal: Red for removed, green for kept
+        return det.verification_status === 'rejected' ? '#ef4444' : '#22c55e';
+      } else {
+        // LLM Verification and others: Full verification status colors
+        return det.verification_status === 'verified' ? '#22c55e' 
+          : det.verification_status === 'rejected' ? '#ef4444' 
+          : '#f59e0b';
+      }
+    };
+
+    // Helper to calculate IoU (Intersection over Union) between two normalized bboxes
+    const calculateIoU = (bbox1, bbox2) => {
+      // bbox_normalized format: [ymin, xmin, ymax, xmax] in 0-1000 scale
+      const [y1min, x1min, y1max, x1max] = bbox1;
+      const [y2min, x2min, y2max, x2max] = bbox2;
+      
+      // Calculate intersection
+      const xIntersect = Math.max(0, Math.min(x1max, x2max) - Math.max(x1min, x2min));
+      const yIntersect = Math.max(0, Math.min(y1max, y2max) - Math.max(y1min, y2min));
+      const intersection = xIntersect * yIntersect;
+      
+      // Calculate union
+      const area1 = (x1max - x1min) * (y1max - y1min);
+      const area2 = (x2max - x2min) * (y2max - y2min);
+      const union = area1 + area2 - intersection;
+      
+      return union > 0 ? intersection / union : 0;
+    };
+
+    // Helper to find overlapping detections for a given detection
+    const findOverlappingTags = (det, allDetections) => {
+      const overlapping = [];
+      allDetections.forEach(other => {
+        if (other.page_number !== det.page_number) return;
+        // Skip rejected detections (removed by overlap removal)
+        if (other.verification_status === 'rejected') return;
+        
+        // Check if bboxes overlap (IoU > 0.1 or centers are close)
+        const iou = calculateIoU(det.bbox_normalized, other.bbox_normalized);
+        if (iou > 0.1) {
+          overlapping.push({
+            tag_name: other.tag_name || 'Unknown',
+            confidence: other.confidence,
+            id: other.id,
+            status: other.verification_status,
+          });
+        }
+      });
+      
+      // Sort by confidence descending
+      return overlapping.sort((a, b) => b.confidence - a.confidence);
+    };
+
     // For detection and verification stages, show individual detections
     if (['detection', 'verification', 'overlap'].includes(stage)) {
       if (showIcons) {
         filteredIconDetections.forEach(det => {
           const isSelected = det.id === selectedDetectionId;
-          const statusColor = det.verification_status === 'verified' ? '#22c55e' 
-            : det.verification_status === 'rejected' ? '#ef4444' 
-            : '#f59e0b';
           boxes.push({
             id: `icon-${det.id}`,
             bbox_normalized: det.bbox_normalized,
             page_number: det.page_number,
-            color: isSelected ? '#3b82f6' : statusColor,
+            color: getDetectionColor(det, isSelected),
             confidence: det.confidence,
+            label: `🔷 ${Math.round(det.confidence * 100)}%`,  // Show icon confidence
           });
         });
       }
       if (showLabels) {
         filteredLabelDetections.forEach(det => {
           const isSelected = det.id === selectedDetectionId;
-          const statusColor = det.verification_status === 'verified' ? '#22c55e' 
-            : det.verification_status === 'rejected' ? '#ef4444' 
-            : '#f59e0b';
+          // Find all overlapping tags for this detection (only non-rejected tags)
+          // Don't calculate overlapping tags for rejected detections
+          const overlappingTags = det.verification_status !== 'rejected' 
+            ? findOverlappingTags(det, labelDetections) // Use all labelDetections to find overlaps
+            : [];
+          
           boxes.push({
             id: `label-${det.id}`,
             bbox_normalized: det.bbox_normalized,
             page_number: det.page_number,
-            color: isSelected ? '#3b82f6' : statusColor,
+            color: getDetectionColor(det, isSelected),
             confidence: det.confidence,
-            label: det.tag_name || null,  // Show tag text on bounding box
+            label: det.tag_name 
+              ? `${det.tag_name} (${Math.round(det.confidence * 100)}%)` 
+              : `${Math.round(det.confidence * 100)}%`,  // Show tag text + confidence
+            overlappingTags: overlappingTags.length > 1 ? overlappingTags : [], // Only show if multiple tags overlap
           });
         });
       }
@@ -222,8 +341,8 @@ const ProcessingSection = () => {
     
     // For matching stages, show matches
     if (['matching', 'tag-matching', 'icon-matching'].includes(stage)) {
-      const iconMap = new Map(iconDetections.map(d => [d.id, d]));
-      const labelMap = new Map(labelDetections.map(d => [d.id, d]));
+      const iconMap = new Map((iconDetections || []).map(d => [d.id, d]));
+      const labelMap = new Map((labelDetections || []).map(d => [d.id, d]));
       
       filteredMatches.forEach((match, index) => {
         const icon = iconMap.get(match.icon_detection_id);
@@ -329,14 +448,14 @@ const ProcessingSection = () => {
       let labelResult = null;
 
       // Verify icons
-      if (iconDetections.length > 0) {
+      if ((iconDetections || []).length > 0) {
         setProcessingMessage('AI verifying icon detections...');
         const iconResponse = await api.verifyIconDetections(selectedProject.id);
         iconResult = iconResponse.data;
       }
 
       // Verify labels
-      if (labelDetections.length > 0) {
+      if ((labelDetections || []).length > 0) {
         setProcessingMessage('AI verifying label detections...');
         const labelResponse = await api.verifyLabelDetections(selectedProject.id);
         labelResult = labelResponse.data;
@@ -611,18 +730,26 @@ const ProcessingSection = () => {
                   ({selectedLegendItemIds.size} of {legendItems.length} selected)
                 </span>
               )}
-              <span className="text-xs text-gray-500 ml-auto">
-                Raw Detections: {iconDetections.length} icons | {labelDetections.length} labels
-              </span>
+              <div className="ml-auto flex items-center gap-4">
+                <div className="flex items-center gap-2 bg-amber-50 px-3 py-1 rounded-lg border border-amber-200">
+                  <span className="text-amber-600 font-medium">🔷 {stageCounts.icons}</span>
+                  <span className="text-xs text-amber-500">icons detected</span>
+                </div>
+                <div className="flex items-center gap-2 bg-amber-50 px-3 py-1 rounded-lg border border-amber-200">
+                  <span className="text-amber-600 font-medium">📝 {stageCounts.labels}</span>
+                  <span className="text-xs text-amber-500">tags detected</span>
+                </div>
+              </div>
             </div>
           )}
 
           {/* Overlap removal stage filters */}
           {currentStage === 1 && (() => {
-            const removedCount = labelDetections.filter(d => d.verification_status === 'rejected').length;
-            const keptCount = labelDetections.filter(d => d.verification_status !== 'rejected').length;
-            const totalCount = labelDetections.length;
+            const removedCount = stageCounts.labelsRemovedByOverlap;
+            const keptCount = stageCounts.labelsAfterOverlap;
+            const totalCount = stageCounts.labels;
             const displayCount = filteredLabelDetections.length;
+            const savingsPercent = totalCount > 0 ? Math.round((removedCount / totalCount) * 100) : 0;
             
             return (
               <div className="flex items-center gap-4 flex-wrap">
@@ -643,9 +770,17 @@ const ProcessingSection = () => {
                     </button>
                   );
                 })}
-                <span className="text-xs text-gray-500 ml-auto">
-                  Showing {displayCount} of {totalCount} labels
-                </span>
+                <div className="ml-auto flex items-center gap-3">
+                  <div className="flex items-center gap-2 bg-red-50 px-3 py-1 rounded-lg border border-red-200">
+                    <span className="text-red-600 font-medium">🗑️ {removedCount}</span>
+                    <span className="text-xs text-red-500">removed ({savingsPercent}%)</span>
+                  </div>
+                  <span className="text-gray-400">→</span>
+                  <div className="flex items-center gap-2 bg-green-50 px-3 py-1 rounded-lg border border-green-200">
+                    <span className="text-green-600 font-medium">✓ {keptCount}</span>
+                    <span className="text-xs text-green-500">tags remaining</span>
+                  </div>
+                </div>
               </div>
             );
           })()}
@@ -654,23 +789,53 @@ const ProcessingSection = () => {
           {currentStage === 2 && (
             <div className="flex items-center gap-4 flex-wrap">
               <span className="text-sm font-medium text-gray-700">Show:</span>
-              {VERIFICATION_FILTERS.map(f => (
-                <button
-                  key={f.key}
-                  onClick={() => setVerificationFilter(f.key)}
-                  className={`px-3 py-1 text-sm rounded ${
-                    verificationFilter === f.key
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  {f.label}
-                </button>
-              ))}
-              <span className="text-xs text-gray-500 ml-auto">
-                Icons: {stageCounts.iconVerified} ✓ / {stageCounts.iconRejected} ✗ | 
-                Labels: {stageCounts.labelVerified} ✓ / {stageCounts.labelRejected} ✗
-              </span>
+              {VERIFICATION_FILTERS.map(f => {
+                // Calculate count for each filter
+                let iconCount = 0, labelCount = 0;
+                if (f.key === 'all') {
+                  iconCount = stageCounts.icons;
+                  labelCount = stageCounts.labelsAfterOverlap; // Only non-overlap-rejected
+                } else if (f.key === 'verified') {
+                  iconCount = stageCounts.iconVerified;
+                  labelCount = stageCounts.labelVerified;
+                } else if (f.key === 'rejected') {
+                  iconCount = stageCounts.iconRejected;
+                  labelCount = stageCounts.labelsRejectedByLLM; // Only LLM rejections, not overlap removal
+                } else if (f.key === 'pending') {
+                  iconCount = stageCounts.iconPending;
+                  labelCount = stageCounts.labelPending;
+                }
+                return (
+                  <button
+                    key={f.key}
+                    onClick={() => setVerificationFilter(f.key)}
+                    className={`px-3 py-1 text-sm rounded ${
+                      verificationFilter === f.key
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    {f.label} ({iconCount + labelCount})
+                  </button>
+                );
+              })}
+              <div className="ml-auto flex items-center gap-3">
+                <div className="text-xs bg-gray-100 px-2 py-1 rounded">
+                  <span className="text-green-600 font-medium">🔷 {stageCounts.iconVerified}✓</span>
+                  <span className="text-red-600 font-medium ml-1">{stageCounts.iconRejected}✗</span>
+                  <span className="text-gray-400 ml-1">icons</span>
+                </div>
+                <div className="text-xs bg-gray-100 px-2 py-1 rounded">
+                  <span className="text-green-600 font-medium">📝 {stageCounts.labelVerified}✓</span>
+                  <span className="text-red-600 font-medium ml-1">{stageCounts.labelsRejectedByLLM}✗</span>
+                  <span className="text-gray-400 ml-1">tags</span>
+                </div>
+                <span className="text-gray-400">→</span>
+                <div className="flex items-center gap-2 bg-green-50 px-3 py-1 rounded-lg border border-green-200">
+                  <span className="text-green-600 font-medium">✓ {stageCounts.iconVerified + stageCounts.labelVerified}</span>
+                  <span className="text-xs text-green-500">verified total</span>
+                </div>
+              </div>
             </div>
           )}
 
@@ -678,22 +843,40 @@ const ProcessingSection = () => {
           {currentStage >= 3 && (
             <div className="flex items-center gap-4 flex-wrap">
               <span className="text-sm font-medium text-gray-700">Filter:</span>
-              {MATCH_FILTERS.map(f => (
-                <button
-                  key={f.key}
-                  onClick={() => setMatchFilter(f.key)}
-                  className={`px-3 py-1 text-sm rounded ${
-                    matchFilter === f.key
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  {f.label}
-                </button>
-              ))}
-              <span className="text-xs text-gray-500 ml-auto">
-                {stageCounts.matched} matched / {stageCounts.unmatched} unmatched
-              </span>
+              {MATCH_FILTERS.map(f => {
+                let count = 0;
+                const matchList = matches || [];
+                if (f.key === 'all') count = stageCounts.total;
+                else if (f.key === 'matched') count = stageCounts.matched;
+                else if (f.key === 'unmatched') count = stageCounts.unmatchedIcons + stageCounts.unassignedTags;
+                else if (f.key === 'llm_tag_for_icon') count = matchList.filter(m => m.match_method === 'llm_matched' && m.label_detection_id).length;
+                else if (f.key === 'llm_icon_for_tag') count = matchList.filter(m => m.match_method === 'llm_matched' && !m.label_detection_id).length;
+                return (
+                  <button
+                    key={f.key}
+                    onClick={() => setMatchFilter(f.key)}
+                    className={`px-3 py-1 text-sm rounded ${
+                      matchFilter === f.key
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    {f.label} ({count})
+                  </button>
+                );
+              })}
+              <div className="ml-auto flex items-center gap-3">
+                <div className="flex items-center gap-2 bg-green-50 px-3 py-1 rounded-lg border border-green-200">
+                  <span className="text-green-600 font-medium">🔗 {stageCounts.matched}</span>
+                  <span className="text-xs text-green-500">matched pairs</span>
+                </div>
+                {(stageCounts.unmatchedIcons > 0 || stageCounts.unassignedTags > 0) && (
+                  <div className="flex items-center gap-2 bg-amber-50 px-3 py-1 rounded-lg border border-amber-200">
+                    <span className="text-amber-600 font-medium">⚠️ {stageCounts.unmatchedIcons + stageCounts.unassignedTags}</span>
+                    <span className="text-xs text-amber-500">unmatched</span>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -706,7 +889,7 @@ const ProcessingSection = () => {
                 onChange={(e) => setShowIcons(e.target.checked)}
                 className="w-4 h-4 text-green-600 rounded"
               />
-              <span className="text-sm text-green-700">Show Icons ({stageCounts.icons})</span>
+              <span className="text-sm text-green-700">Show Icons</span>
             </label>
             <label className="flex items-center gap-2 cursor-pointer">
               <input
@@ -715,7 +898,7 @@ const ProcessingSection = () => {
                 onChange={(e) => setShowLabels(e.target.checked)}
                 className="w-4 h-4 text-blue-600 rounded"
               />
-              <span className="text-sm text-blue-700">Show Labels ({stageCounts.labels})</span>
+              <span className="text-sm text-blue-700">Show Labels</span>
             </label>
           </div>
         </div>
@@ -838,13 +1021,89 @@ const ProcessingSection = () => {
           </>
         )}
 
-        {/* Verification/Overlap stages: Detection list */}
-        {(currentStage === 1 || currentStage === 2) && (
+        {/* Overlap Removal stage: Show removed vs kept */}
+        {currentStage === 1 && (
           <>
             <div className="p-4 border-b bg-gray-50">
-              <h3 className="font-semibold text-gray-800">Detections</h3>
-              <div className="text-xs text-gray-600 mt-1">
-                Icons: {stageCounts.icons} | Labels: {stageCounts.labels}
+              <h3 className="font-semibold text-gray-800">Overlap Removal Results</h3>
+              <div className="text-xs mt-2 space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Before:</span>
+                  <span className="font-medium">{stageCounts.labels} tags</span>
+                </div>
+                <div className="flex justify-between text-red-600">
+                  <span>🗑️ Removed:</span>
+                  <span className="font-medium">-{stageCounts.labelsRemovedByOverlap}</span>
+                </div>
+                <div className="flex justify-between text-green-600 border-t pt-1">
+                  <span>✓ Remaining:</span>
+                  <span className="font-medium">{stageCounts.labelsAfterOverlap} tags</span>
+                </div>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2 space-y-1">
+              {showLabels && filteredLabelDetections.map((det, index) => (
+                <div
+                  key={det.id}
+                  onClick={() => {
+                    setSelectedDetectionId(det.id);
+                    setScrollToPage(det.page_number);
+                  }}
+                  className={`
+                    p-2 rounded border text-xs cursor-pointer transition-all
+                    ${selectedDetectionId === det.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'}
+                  `}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium">
+                      📝 {det.tag_name ? `"${det.tag_name}"` : `Label #${index + 1}`}
+                    </span>
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] ${
+                      det.verification_status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+                    }`}>
+                      {det.verification_status === 'rejected' ? 'Removed' : 'Kept'}
+                    </span>
+                  </div>
+                  <div className="text-gray-500 mt-1">
+                    Page {det.page_number} | Conf: {(det.confidence * 100).toFixed(0)}%
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* LLM Verification stage: Show verification status */}
+        {currentStage === 2 && (
+          <>
+            <div className="p-4 border-b bg-gray-50">
+              <h3 className="font-semibold text-gray-800">LLM Verification Results</h3>
+              <div className="text-xs mt-2 space-y-2">
+                {/* Icons */}
+                <div className="bg-white rounded p-2 border">
+                  <div className="font-medium text-gray-700 mb-1">🔷 Icons ({stageCounts.icons})</div>
+                  <div className="flex gap-2 text-[10px]">
+                    <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded">✓ {stageCounts.iconVerified}</span>
+                    <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded">✗ {stageCounts.iconRejected}</span>
+                    <span className="bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">⏳ {stageCounts.iconPending}</span>
+                  </div>
+                </div>
+                {/* Tags */}
+                <div className="bg-white rounded p-2 border">
+                  <div className="font-medium text-gray-700 mb-1">📝 Tags ({stageCounts.labelsAfterOverlap})</div>
+                  <div className="flex gap-2 text-[10px]">
+                    <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded">✓ {stageCounts.labelVerified}</span>
+                    <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded">✗ {stageCounts.labelsRejectedByLLM}</span>
+                    <span className="bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">⏳ {stageCounts.labelPending}</span>
+                  </div>
+                </div>
+                {/* Final */}
+                <div className="bg-green-50 rounded p-2 border border-green-200">
+                  <div className="flex justify-between text-green-700">
+                    <span className="font-medium">Ready for Matching:</span>
+                    <span className="font-bold">{stageCounts.iconVerified + stageCounts.labelVerified}</span>
+                  </div>
+                </div>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -912,9 +1171,30 @@ const ProcessingSection = () => {
         {currentStage >= 3 && (
           <>
             <div className="p-4 border-b bg-gray-50">
-              <h3 className="font-semibold text-gray-800">Matches</h3>
-              <div className="text-xs text-gray-600 mt-1">
-                {stageCounts.matched} matched | {stageCounts.unmatched} unmatched
+              <h3 className="font-semibold text-gray-800">
+                {currentStage === 3 ? 'Basic Matching' : currentStage === 4 ? 'Tag→Icon Matching' : 'Icon→Tag Matching'}
+              </h3>
+              <div className="text-xs mt-2 space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Input:</span>
+                  <span className="font-medium">{stageCounts.iconVerified} icons, {stageCounts.labelVerified} tags</span>
+                </div>
+                <div className="flex justify-between text-green-600">
+                  <span>🔗 Matched:</span>
+                  <span className="font-medium">{stageCounts.matched} pairs</span>
+                </div>
+                {stageCounts.unmatchedIcons > 0 && (
+                  <div className="flex justify-between text-amber-600">
+                    <span>⚠️ Unmatched Icons:</span>
+                    <span className="font-medium">{stageCounts.unmatchedIcons}</span>
+                  </div>
+                )}
+                {stageCounts.unassignedTags > 0 && (
+                  <div className="flex justify-between text-amber-600">
+                    <span>⚠️ Unassigned Tags:</span>
+                    <span className="font-medium">{stageCounts.unassignedTags}</span>
+                  </div>
+                )}
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -924,7 +1204,7 @@ const ProcessingSection = () => {
                 </div>
               ) : (
                 filteredMatches.map((match, index) => {
-                  const icon = iconDetections.find(d => d.id === match.icon_detection_id);
+                  const icon = (iconDetections || []).find(d => d.id === match.icon_detection_id);
                   return (
                     <div
                       key={match.id}

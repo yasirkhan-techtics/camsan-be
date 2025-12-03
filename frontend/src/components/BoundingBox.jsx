@@ -10,12 +10,14 @@ const BoundingBox = ({
   onSelect,
   score,
   label, // Label text to display on the box (e.g., LLM-assigned label)
+  overlappingTags = [], // Array of {tag_name, confidence} for overlapping detections
 }) => {
   const [currentBbox, setCurrentBbox] = useState(bbox);
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [resizeHandle, setResizeHandle] = useState(null);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [isHovered, setIsHovered] = useState(false);
   const boxRef = useRef(null);
 
   // Update local state when prop changes
@@ -153,6 +155,13 @@ const BoundingBox = ({
 
   const handleSize = 8;
 
+  // Check if there are overlapping tags to show
+  const hasOverlappingTags = overlappingTags && overlappingTags.length > 0;
+  
+  // Determine if tooltip should show above or below based on bbox position
+  // Show below if bbox is near the top (y < 150px estimated tooltip height)
+  const showTooltipBelow = y < 150;
+
   return (
     <div
       ref={boxRef}
@@ -169,8 +178,83 @@ const BoundingBox = ({
         pointerEvents: 'auto'
       }}
       onMouseDown={(e) => handleMouseDown(e)}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
       className="bbox-overlay"
     >
+      {/* Hover tooltip showing all overlapping tags */}
+      {isHovered && hasOverlappingTags && (
+        <div
+          style={{
+            position: 'absolute',
+            // Position above or below based on available space
+            ...(showTooltipBelow ? {
+              top: '100%',
+              marginTop: '8px',
+            } : {
+              bottom: '100%',
+              marginBottom: '8px',
+            }),
+            left: '50%',
+            transform: 'translateX(-50%)',
+            padding: '8px 12px',
+            backgroundColor: 'rgba(30, 30, 30, 0.95)',
+            color: '#fff',
+            borderRadius: '6px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+            zIndex: 1000,
+            minWidth: '120px',
+            maxWidth: '250px',
+          }}
+        >
+          <div style={{ fontSize: '10px', color: '#aaa', marginBottom: '4px', fontWeight: 'bold' }}>
+            Detected Tags ({overlappingTags.length})
+          </div>
+          {overlappingTags.map((tag, idx) => (
+            <div 
+              key={idx} 
+              style={{ 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                alignItems: 'center',
+                padding: '3px 0',
+                borderBottom: idx < overlappingTags.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none',
+              }}
+            >
+              <span style={{ fontSize: '12px', fontWeight: '500' }}>
+                {tag.tag_name || 'Unknown'}
+              </span>
+              <span style={{ 
+                fontSize: '11px', 
+                backgroundColor: tag.confidence > 0.7 ? '#22c55e' : tag.confidence > 0.4 ? '#f59e0b' : '#ef4444',
+                padding: '1px 6px',
+                borderRadius: '10px',
+                marginLeft: '8px',
+              }}>
+                {Math.round(tag.confidence * 100)}%
+              </span>
+            </div>
+          ))}
+          {/* Tooltip arrow - points up or down based on position */}
+          <div style={{
+            position: 'absolute',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: 0,
+            height: 0,
+            borderLeft: '6px solid transparent',
+            borderRight: '6px solid transparent',
+            ...(showTooltipBelow ? {
+              top: '-6px',
+              borderBottom: '6px solid rgba(30, 30, 30, 0.95)',
+            } : {
+              bottom: '-6px',
+              borderTop: '6px solid rgba(30, 30, 30, 0.95)',
+            }),
+          }} />
+        </div>
+      )}
+      
       {/* Label display (for AI-matched icons) */}
       {label && (
         <div

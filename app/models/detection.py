@@ -105,6 +105,8 @@ class LabelDetection(BaseModel):
         default="pending",
         nullable=False,
     )
+    # Track why a detection was rejected: "overlap_removal" or "llm_verification"
+    rejection_source = Column(Text, nullable=True)
 
     label_template = relationship("LabelTemplate", back_populates="detections")
     page = relationship("PDFPage")

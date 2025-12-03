@@ -80,9 +80,9 @@ class DetectionVerificationResponse(BaseModel):
 
 # Tag Overlap Resolution Schemas
 class TagOverlapClassification(BaseModel):
-    sr_no: int = Field(..., description="Serial number of the overlapping pair")
-    selected_tag: str = Field(..., description="The tag name that should be kept")
-    confidence: str = Field(default="medium", description="Confidence level: high/medium/low")
+    sr_no: int = Field(..., description="Serial number of the overlapping cluster")
+    tag_found: bool = Field(..., description="Whether a valid tag was found in the image")
+    selected_tag: str = Field(default="", description="The tag name that should be kept (empty if tag_found is false)")
 
 
 class TagOverlapResolutionLLMResponse(BaseModel):
@@ -110,5 +110,16 @@ class TagMatchResult(BaseModel):
     matched_icon_type: Optional[str] = Field(None, description="Type of the matched icon")
     confidence: str = Field(default="low", description="Confidence level: high/medium/low")
     reasoning: str = Field(default="", description="Brief explanation for the match")
+
+
+class CombinedTagIconVerificationResult(BaseModel):
+    """Combined result for tag verification and icon detection in one call"""
+    tag_correct: bool = Field(..., description="Whether tag text matches expected tag")
+    detected_text: str = Field(default="", description="Actual text seen in the image")
+    tag_confidence: str = Field(default="low", description="Confidence for tag verification")
+    tag_reasoning: str = Field(default="", description="Reasoning for tag verification")
+    icon_detected: bool = Field(..., description="Whether icon is detected near the tag")
+    icon_confidence: str = Field(default="low", description="Confidence for icon detection")
+    icon_reasoning: str = Field(default="", description="Reasoning for icon detection")
 
 

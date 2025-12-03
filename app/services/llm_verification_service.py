@@ -129,13 +129,18 @@ class LLMVerificationService:
         low_conf = []
 
         if detection_type == "label":
-            # Group labels by their template (tag name)
+            # Group labels by their specific tag name (e.g., "CL1", "CL2")
             groups = {}
             for det in detections:
+                # Use tag_name from template first, fall back to legend_item.label_text
                 tag_name = (
-                    det.label_template.legend_item.label_text
-                    if det.label_template and det.label_template.legend_item
-                    else "unknown"
+                    det.label_template.tag_name
+                    if det.label_template and det.label_template.tag_name
+                    else (
+                        det.label_template.legend_item.label_text
+                        if det.label_template and det.label_template.legend_item
+                        else "unknown"
+                    )
                 )
                 if tag_name not in groups:
                     groups[tag_name] = []
@@ -497,10 +502,14 @@ CRITICAL: You MUST provide exactly {num_items} results."""
         print(f"ICON DETECTION VERIFICATION PIPELINE")
         print(f"{'='*60}")
 
-        # Load all icon detections with templates
+        # Load non-rejected icon detections with templates
+        # (excludes detections already rejected by overlap removal or previous runs)
         detections = (
             self.db.query(IconDetection)
-            .filter(IconDetection.project_id == project.id)
+            .filter(
+                IconDetection.project_id == project.id,
+                IconDetection.verification_status != "rejected",
+            )
             .options(
                 selectinload(IconDetection.icon_template).selectinload(
                     IconTemplate.legend_item
@@ -649,10 +658,14 @@ CRITICAL: You MUST provide exactly {num_items} results."""
         print(f"LABEL DETECTION VERIFICATION PIPELINE")
         print(f"{'='*60}")
 
-        # Load all label detections with templates
+        # Load non-rejected label detections with templates
+        # (excludes detections already rejected by overlap removal or previous runs)
         detections = (
             self.db.query(LabelDetection)
-            .filter(LabelDetection.project_id == project.id)
+            .filter(
+                LabelDetection.project_id == project.id,
+                LabelDetection.verification_status != "rejected",
+            )
             .options(
                 selectinload(LabelDetection.label_template).selectinload(
                     LabelTemplate.legend_item
@@ -690,13 +703,18 @@ CRITICAL: You MUST provide exactly {num_items} results."""
         if low_conf:
             print(f"\n   Processing {len(low_conf)} low-confidence detections...")
 
-            # Group by tag name for batch processing
+            # Group by specific tag name for batch processing (e.g., "CL1", "CL2")
             tag_groups = {}
             for det in low_conf:
+                # Use tag_name from template first, fall back to legend_item.label_text
                 tag_name = (
-                    det.label_template.legend_item.label_text
-                    if det.label_template and det.label_template.legend_item
-                    else "unknown"
+                    det.label_template.tag_name
+                    if det.label_template and det.label_template.tag_name
+                    else (
+                        det.label_template.legend_item.label_text
+                        if det.label_template and det.label_template.legend_item
+                        else "unknown"
+                    )
                 )
                 if tag_name not in tag_groups:
                     tag_groups[tag_name] = []
@@ -739,6 +757,8 @@ CRITICAL: You MUST provide exactly {num_items} results."""
                         if len(results) == len(batch):
                             for det, is_valid in zip(batch, results):
                                 det.verification_status = "verified" if is_valid else "rejected"
+                                if not is_valid:
+                                    det.rejection_source = "llm_verification"
                                 self.db.add(det)
                                 if is_valid:
                                     llm_approved += 1
@@ -748,6 +768,7 @@ CRITICAL: You MUST provide exactly {num_items} results."""
                             # Mark as rejected if verification failed
                             for det in batch:
                                 det.verification_status = "rejected"
+                                det.rejection_source = "llm_verification"
                                 self.db.add(det)
                             llm_rejected += len(batch)
 

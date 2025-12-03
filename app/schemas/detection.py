@@ -93,6 +93,7 @@ class LabelDetectionResponse(BaseModel):
     scale: float
     rotation: int
     verification_status: str
+    rejection_source: Optional[str] = None  # "overlap_removal" or "llm_verification"
     tag_name: Optional[str] = None  # Tag text (e.g., "CL1", "CF2") for display
     created_at: datetime
     updated_at: datetime
@@ -206,11 +207,16 @@ class TagMatchingForIconsResponse(BaseModel):
     api_calls_made: int = Field(description="Number of LLM API calls made")
 
 
-# Phase 6: Icon matching for unlabeled tags
+# Phase 6: Icon detection for unlabeled tags
 class IconMatchingForTagsResponse(BaseModel):
-    """Response for Phase 6: Icon matching for unlabeled tags"""
+    """Response for Phase 6: Icon detection for unlabeled tags using LLM + Template Matching"""
     total_unassigned_tags: int = Field(description="Total tags without assigned icons")
-    tags_matched: int = Field(description="Tags successfully matched to icons by LLM")
+    tags_verified_incorrect: int = Field(default=0, description="Tags with incorrect text (skipped)")
+    icons_detected_by_llm: int = Field(default=0, description="Icons detected by LLM verification")
+    icons_not_found: int = Field(default=0, description="Icons not found by LLM")
+    template_match_success: int = Field(default=0, description="Successful template matches for bbox")
+    template_match_failed: int = Field(default=0, description="Failed template matches")
+    tags_matched: int = Field(description="Tags successfully matched (new icons created)")
     api_calls_made: int = Field(description="Number of LLM API calls made")
 
 

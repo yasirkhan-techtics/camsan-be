@@ -25,6 +25,7 @@ from schemas.detection import (
     UpdateDetectionRequest,
 )
 from services.batch_service import BatchService, get_batch_service
+from services.cascade_reset_service import cascade_reset_from_stage
 from services.icon_service import IconService, get_icon_service
 from services.llm_matcher_service import LLMMatcherService, get_llm_matcher_service
 from services.llm_verification_service import (
@@ -112,6 +113,9 @@ def detect_icons(
         print(f"❌ [ICON DETECTION] Project not found: {project_id}")
         raise HTTPException(status_code=404, detail="Project not found.")
 
+    # Cascade reset: Clear only icon detections (not labels)
+    cascade_reset_from_stage(db, project_id, stage=0, detection_type="icons")
+
     print(f"📊 [ICON DETECTION] Project found, running detection service...")
     detections = icon_service.detect_icons(project)
     print(f"✅ [ICON DETECTION] Detection complete! Found {len(detections)} icon detections")
@@ -149,6 +153,9 @@ def match_icons_and_labels(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
+
+    # Cascade reset: Clear downstream data (Stage 3 - Basic Matching)
+    cascade_reset_from_stage(db, project_id, stage=3)
 
     matches = matching_service.match_icons_to_labels(project)
     StateManager(db).transition(project, "completed", "matching_complete")
@@ -312,6 +319,9 @@ def verify_icon_detections(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     
+    # Cascade reset: Clear only icon verification (not labels)
+    cascade_reset_from_stage(db, project_id, stage=2, detection_type="icons")
+    
     batch_size = payload.batch_size if payload else 10
     
     print(f"🔍 [LLM VERIFY] Starting icon verification for project: {project_id}")
@@ -389,6 +399,9 @@ def match_tags_for_unlabeled_icons(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     
+    # Cascade reset: Clear downstream data (Stage 4 - Tag Matching)
+    cascade_reset_from_stage(db, project_id, stage=4)
+    
     save_crops = payload.save_crops if payload else False
     
     print(f"🔍 [PHASE 5] Starting tag matching for unlabeled icons: {project_id}")
@@ -414,10 +427,13 @@ def match_icons_for_unlabeled_tags(
     matcher_service: LLMMatcherService = Depends(get_llm_matcher_service),
 ):
     """
-    PHASE 6: Use LLM to find matching icons for unlabeled tags.
+    PHASE 6: Detect icons for unlabeled tags using LLM + Template Matching.
     
-    This endpoint processes tags that have no assigned icon and uses LLM
-    to find matching icons by analyzing the surrounding area.
+    This endpoint processes tags that have no assigned icon and:
+    1. Verifies tag text is correct using LLM
+    2. Detects if icon is present near the tag using LLM
+    3. Uses template matching to find precise icon bbox
+    4. Creates NEW IconDetection records for found icons
     
     Should be called after:
     - Tag matching for icons (match-tags-for-icons)
@@ -428,14 +444,22 @@ def match_icons_for_unlabeled_tags(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     
+    # Cascade reset: Clear downstream data (Stage 5 - Icon Matching)
+    cascade_reset_from_stage(db, project_id, stage=5)
+    
     save_crops = payload.save_crops if payload else False
     
-    print(f"🔍 [PHASE 6] Starting icon matching for unlabeled tags: {project_id}")
+    print(f"🔍 [PHASE 6] Starting icon detection for unlabeled tags: {project_id}")
     result = matcher_service.match_icons_for_unlabeled_tags(project, save_crops=save_crops)
-    print(f"✅ [PHASE 6] Icon matching complete!")
+    print(f"✅ [PHASE 6] Icon detection complete!")
     
     return IconMatchingForTagsResponse(
         total_unassigned_tags=result["total_unassigned_tags"],
+        tags_verified_incorrect=result.get("tags_verified_incorrect", 0),
+        icons_detected_by_llm=result.get("icons_detected_by_llm", 0),
+        icons_not_found=result.get("icons_not_found", 0),
+        template_match_success=result.get("template_match_success", 0),
+        template_match_failed=result.get("template_match_failed", 0),
         tags_matched=result["tags_matched"],
         api_calls_made=result["api_calls_made"],
     )
