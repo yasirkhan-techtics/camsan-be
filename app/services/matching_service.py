@@ -1,6 +1,7 @@
 from typing import List
 
 from fastapi import Depends, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -64,14 +65,19 @@ class MatchingService:
         
         print(f"[MATCHING] Found {len(pages)} pages")
 
-        # Only delete distance-based matches (Basic Matching results)
-        # Preserve LLM matches from Tag Matching and Icon Matching stages
+        # Delete ALL distance-based matches (Basic Matching results)
+        # This includes matched, unmatched_icon, AND unassigned_tag records
+        # Use outer joins to catch unassigned_tag matches (where icon_detection_id is NULL)
         match_ids = (
             self.db.query(IconLabelMatch.id)
-            .join(IconDetection)
+            .outerjoin(IconDetection, IconLabelMatch.icon_detection_id == IconDetection.id)
+            .outerjoin(LabelDetection, IconLabelMatch.label_detection_id == LabelDetection.id)
             .filter(
-                IconDetection.project_id == project.id,
-                IconLabelMatch.match_method == "distance"
+                IconLabelMatch.match_method == "distance",
+                or_(
+                    IconDetection.project_id == project.id,
+                    LabelDetection.project_id == project.id,
+                )
             )
             .all()
         )

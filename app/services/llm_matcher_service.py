@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 from fastapi import Depends
 from PIL import Image
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
 from database import get_db
@@ -637,10 +638,20 @@ You MUST respond with VALID JSON in this exact format:
             Dictionary with all_matches, unmatched_icons, unassigned_tags, padding_stats
         """
         # Get all matches for this project
+        # Use outer joins to include all match types:
+        # - matched: has both icon and label
+        # - unmatched_icon: has icon, no label
+        # - unassigned_tag: has label, no icon
         all_matches = (
             self.db.query(IconLabelMatch)
-            .join(IconDetection)
-            .filter(IconDetection.project_id == project.id)
+            .outerjoin(IconDetection, IconLabelMatch.icon_detection_id == IconDetection.id)
+            .outerjoin(LabelDetection, IconLabelMatch.label_detection_id == LabelDetection.id)
+            .filter(
+                or_(
+                    IconDetection.project_id == project.id,
+                    LabelDetection.project_id == project.id,
+                )
+            )
             .options(
                 selectinload(IconLabelMatch.icon_detection).selectinload(
                     IconDetection.icon_template
@@ -664,9 +675,12 @@ You MUST respond with VALID JSON in this exact format:
             if m.match_status == "unmatched_icon" or m.label_detection_id is None
         ]
 
-        # Get unassigned tags (verified tags not in any match)
+        # Get unassigned tags (verified tags not paired with an icon)
+        # Only consider tags as "matched" if they're in a record with match_status="matched"
+        # Tags in "unassigned_tag" records are still available for LLM matching
         matched_label_ids = {
-            m.label_detection_id for m in all_matches if m.label_detection_id
+            m.label_detection_id for m in all_matches 
+            if m.label_detection_id and m.match_status == "matched"
         }
         all_verified_labels = (
             self.db.query(LabelDetection)

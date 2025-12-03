@@ -14,6 +14,7 @@ Pipeline stages:
 """
 
 from uuid import UUID
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from fastapi import Depends
 
@@ -200,9 +201,15 @@ class CascadeResetService:
         """Delete all matches (both distance and LLM) since basic matching is the foundation."""
         # Delete ALL matches - basic matching is the foundation for later stages
         # When re-running basic matching, we need a clean slate
+        # Use OR to catch both icon-based and label-based matches (including unassigned_tag)
         matches_deleted = self.db.query(IconLabelMatch).filter(
-            IconLabelMatch.icon_detection_id.in_(
-                self.db.query(IconDetection.id).filter(IconDetection.project_id == project_id)
+            or_(
+                IconLabelMatch.icon_detection_id.in_(
+                    self.db.query(IconDetection.id).filter(IconDetection.project_id == project_id)
+                ),
+                IconLabelMatch.label_detection_id.in_(
+                    self.db.query(LabelDetection.id).filter(LabelDetection.project_id == project_id)
+                )
             )
         ).delete(synchronize_session=False)
         
