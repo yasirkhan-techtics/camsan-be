@@ -104,8 +104,8 @@ class LabelDetectionResponse(BaseModel):
 
 class IconLabelMatchResponse(BaseModel):
     id: UUID
-    icon_detection_id: UUID
-    label_detection_id: Optional[UUID]
+    icon_detection_id: Optional[UUID]  # None for unassigned_tag matches
+    label_detection_id: Optional[UUID]  # None for unmatched_icon matches
     distance: float
     match_confidence: float
     match_method: str

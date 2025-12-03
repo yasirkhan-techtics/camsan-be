@@ -900,7 +900,7 @@ You MUST respond with VALID JSON in this exact format:
                     # Update match with LLM-assigned label
                     match.llm_assigned_label = matched_tag
                     match.match_confidence = 0.85 if result.confidence == "high" else 0.70 if result.confidence == "medium" else 0.55
-                    match.match_method = "llm_matched"
+                    match.match_method = "llm_tag_for_icon"  # Phase 5: Tag matching for icons
                     match.match_status = "matched"
                     self.db.add(match)
 
@@ -1245,7 +1245,7 @@ You MUST respond with VALID JSON in this exact format:
                     label_detection_id=tag_det.id,
                     distance=distance,
                     match_confidence=match_result['score'],
-                    match_method="llm_matched",
+                    match_method="llm_icon_for_tag",  # Phase 6: Icon detection for tags
                     match_status="matched",
                     llm_assigned_label=tag_name,
                 )

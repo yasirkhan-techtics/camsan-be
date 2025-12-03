@@ -64,10 +64,15 @@ class MatchingService:
         
         print(f"[MATCHING] Found {len(pages)} pages")
 
+        # Only delete distance-based matches (Basic Matching results)
+        # Preserve LLM matches from Tag Matching and Icon Matching stages
         match_ids = (
             self.db.query(IconLabelMatch.id)
             .join(IconDetection)
-            .filter(IconDetection.project_id == project.id)
+            .filter(
+                IconDetection.project_id == project.id,
+                IconLabelMatch.match_method == "distance"
+            )
             .all()
         )
         if match_ids:
@@ -78,7 +83,7 @@ class MatchingService:
                 .delete(synchronize_session=False)
             )
             self.db.commit()
-            print(f"[MATCHING] Deleted {len(match_id_values)} existing matches")
+            print(f"[MATCHING] Deleted {len(match_id_values)} existing distance-based matches")
 
         created_matches: List[IconLabelMatch] = []
         matched_label_ids = set()
@@ -218,14 +223,40 @@ class MatchingService:
                 self.db.add(match)
                 created_matches.append(match)
 
+        # Track unassigned tags (labels that weren't matched to any icon)
+        # Query all verified labels for this project
+        all_verified_labels = (
+            self.db.query(LabelDetection)
+            .filter(
+                LabelDetection.project_id == project.id,
+                LabelDetection.verification_status == "verified",
+            )
+            .all()
+        )
+        
+        for label in all_verified_labels:
+            if label.id not in matched_label_ids:
+                # Create a match record for unassigned tag
+                unassigned_match = IconLabelMatch(
+                    icon_detection_id=None,  # No icon for this tag
+                    label_detection_id=label.id,
+                    distance=0.0,
+                    match_confidence=0.0,
+                    match_method="distance",
+                    match_status="unassigned_tag",
+                )
+                self.db.add(unassigned_match)
+                created_matches.append(unassigned_match)
+
         self.db.commit()
         for match in created_matches:
             self.db.refresh(match)
         
         # Log summary
         matched_count = len([m for m in created_matches if m.match_status == "matched"])
-        unmatched_count = len([m for m in created_matches if m.match_status == "unmatched_icon"])
-        print(f"[MATCHING] Complete: {matched_count} matched, {unmatched_count} unmatched icons")
+        unmatched_icon_count = len([m for m in created_matches if m.match_status == "unmatched_icon"])
+        unassigned_tag_count = len([m for m in created_matches if m.match_status == "unassigned_tag"])
+        print(f"[MATCHING] Complete: {matched_count} matched, {unmatched_icon_count} unmatched icons, {unassigned_tag_count} unassigned tags")
         
         return created_matches
 

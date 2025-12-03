@@ -5,7 +5,7 @@ from sqlalchemy.orm import relationship
 from models.base import BaseModel
 
 VERIFICATION_STATUSES = ("pending", "verified", "rejected")
-MATCH_METHODS = ("distance", "llm_matched")
+MATCH_METHODS = ("distance", "llm_matched", "llm_tag_for_icon", "llm_icon_for_tag")
 MATCH_STATUSES = ("matched", "unmatched_icon", "unassigned_tag")
 
 
@@ -118,7 +118,7 @@ class IconLabelMatch(BaseModel):
     __tablename__ = "icon_label_matches"
 
     icon_detection_id = Column(
-        UUID(as_uuid=True), ForeignKey("icon_detections.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("icon_detections.id"), nullable=True
     )
     label_detection_id = Column(
         UUID(as_uuid=True), ForeignKey("label_detections.id"), nullable=True

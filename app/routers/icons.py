@@ -6,7 +6,7 @@ from fastapi.routing import APIRouter
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models.detection import IconDetection, IconLabelMatch, IconTemplate
+from models.detection import IconDetection, IconLabelMatch, IconTemplate, LabelDetection
 from models.project import Project, PROJECT_STATUSES
 from schemas.detection import (
     BatchVerificationRequest,
@@ -198,10 +198,22 @@ def batch_verify_detections(
     response_model=List[IconLabelMatchResponse],
 )
 def list_matched_results(project_id: UUID, db: Session = Depends(get_db)):
+    # Use outer joins to include all match types:
+    # - matched: has both icon and label
+    # - unmatched_icon: has icon, no label  
+    # - unassigned_tag: has label, no icon
+    from sqlalchemy import or_
+    
     matches = (
         db.query(IconLabelMatch)
-        .join(IconDetection)
-        .filter(IconDetection.project_id == project_id)
+        .outerjoin(IconDetection, IconLabelMatch.icon_detection_id == IconDetection.id)
+        .outerjoin(LabelDetection, IconLabelMatch.label_detection_id == LabelDetection.id)
+        .filter(
+            or_(
+                IconDetection.project_id == project_id,
+                LabelDetection.project_id == project_id,
+            )
+        )
         .all()
     )
     return [IconLabelMatchResponse.model_validate(match) for match in matches]

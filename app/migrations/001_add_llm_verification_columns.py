@@ -8,10 +8,6 @@ This script adds:
 
 Run this script manually if you have an existing database that needs to be updated.
 For new databases, the columns will be created automatically by SQLAlchemy.
-
-Usage:
-    cd app
-    python -m migrations.add_llm_verification_columns
 """
 
 import sys
@@ -136,64 +132,9 @@ def run_migration():
             print(f"   Error: {e}")
             conn.rollback()
         
-        print("\nMigration complete!")
-
-
-def check_migration_status():
-    """Check if migration has been applied."""
-    print("\nChecking migration status...")
-    
-    with engine.connect() as conn:
-        dialect = engine.dialect.name
-        
-        if dialect == "postgresql":
-            # Check label_detections
-            result = conn.execute(text("""
-                SELECT column_name FROM information_schema.columns 
-                WHERE table_name = 'label_detections' AND column_name = 'verification_status'
-            """))
-            has_label_verification = result.fetchone() is not None
-            
-            # Check icon_label_matches
-            result = conn.execute(text("""
-                SELECT column_name FROM information_schema.columns 
-                WHERE table_name = 'icon_label_matches' AND column_name = 'match_method'
-            """))
-            has_match_method = result.fetchone() is not None
-            
-            result = conn.execute(text("""
-                SELECT column_name FROM information_schema.columns 
-                WHERE table_name = 'icon_label_matches' AND column_name = 'match_status'
-            """))
-            has_match_status = result.fetchone() is not None
-        else:
-            # SQLite
-            result = conn.execute(text("PRAGMA table_info(label_detections)"))
-            columns = [row[1] for row in result.fetchall()]
-            has_label_verification = "verification_status" in columns
-            
-            result = conn.execute(text("PRAGMA table_info(icon_label_matches)"))
-            columns = [row[1] for row in result.fetchall()]
-            has_match_method = "match_method" in columns
-            has_match_status = "match_status" in columns
-        
-        print(f"  label_detections.verification_status: {'✓' if has_label_verification else '✗'}")
-        print(f"  icon_label_matches.match_method: {'✓' if has_match_method else '✗'}")
-        print(f"  icon_label_matches.match_status: {'✓' if has_match_status else '✗'}")
-        
-        return has_label_verification and has_match_method and has_match_status
+        print("\n✅ Migration complete!")
 
 
 if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Migration for LLM verification columns")
-    parser.add_argument("--check", action="store_true", help="Check migration status only")
-    args = parser.parse_args()
-    
-    if args.check:
-        check_migration_status()
-    else:
-        run_migration()
-        check_migration_status()
+    run_migration()
 

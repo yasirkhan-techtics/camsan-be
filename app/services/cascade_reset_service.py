@@ -197,14 +197,16 @@ class CascadeResetService:
         }
     
     def _reset_from_basic_matching(self, project_id: UUID) -> dict:
-        """Delete all matches."""
+        """Delete all matches (both distance and LLM) since basic matching is the foundation."""
+        # Delete ALL matches - basic matching is the foundation for later stages
+        # When re-running basic matching, we need a clean slate
         matches_deleted = self.db.query(IconLabelMatch).filter(
             IconLabelMatch.icon_detection_id.in_(
                 self.db.query(IconDetection.id).filter(IconDetection.project_id == project_id)
             )
         ).delete(synchronize_session=False)
         
-        print(f"🔄 [CASCADE RESET] Stage 3 (Basic Matching): Deleted {matches_deleted} matches")
+        print(f"🔄 [CASCADE RESET] Stage 3 (Basic Matching): Deleted {matches_deleted} matches (all types)")
         
         return {
             "icon_detections_deleted": 0,
@@ -215,15 +217,15 @@ class CascadeResetService:
         }
     
     def _reset_from_tag_matching(self, project_id: UUID) -> dict:
-        """Delete LLM-created matches only."""
+        """Delete Tag Matching (Phase 5) matches only - match_method='llm_tag_for_icon'."""
         matches_deleted = self.db.query(IconLabelMatch).filter(
             IconLabelMatch.icon_detection_id.in_(
                 self.db.query(IconDetection.id).filter(IconDetection.project_id == project_id)
             ),
-            IconLabelMatch.match_method == "llm_matched"
+            IconLabelMatch.match_method == "llm_tag_for_icon"
         ).delete(synchronize_session=False)
         
-        print(f"🔄 [CASCADE RESET] Stage 4 (Tag Matching): Deleted {matches_deleted} LLM matches")
+        print(f"🔄 [CASCADE RESET] Stage 4 (Tag Matching): Deleted {matches_deleted} tag-for-icon matches")
         
         return {
             "icon_detections_deleted": 0,
@@ -235,22 +237,19 @@ class CascadeResetService:
     
     def _reset_from_icon_matching(self, project_id: UUID) -> dict:
         """
-        Delete Phase 6 data (LLM-detected icons and their matches).
+        Delete Phase 6 data (Icon Matching) - match_method='llm_icon_for_tag'.
         
-        Since we can't easily distinguish Phase 6 icons from Phase 5 matches,
-        we delete all LLM matches. In the future, we could add a source column
-        to track which phase created the detection.
+        This only deletes matches created by Icon Matching, preserving
+        Tag Matching (Phase 5) results.
         """
-        # For now, just delete LLM matches (same as tag matching)
-        # Phase 6 creates new icon detections, but without a marker we can't identify them
         matches_deleted = self.db.query(IconLabelMatch).filter(
             IconLabelMatch.icon_detection_id.in_(
                 self.db.query(IconDetection.id).filter(IconDetection.project_id == project_id)
             ),
-            IconLabelMatch.match_method == "llm_matched"
+            IconLabelMatch.match_method == "llm_icon_for_tag"
         ).delete(synchronize_session=False)
         
-        print(f"🔄 [CASCADE RESET] Stage 5 (Icon Matching): Deleted {matches_deleted} LLM matches")
+        print(f"🔄 [CASCADE RESET] Stage 5 (Icon Matching): Deleted {matches_deleted} icon-for-tag matches")
         
         return {
             "icon_detections_deleted": 0,
