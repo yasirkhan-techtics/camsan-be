@@ -155,6 +155,7 @@ class LLMMatcherService:
         center: Tuple[int, int],
         padding_stats: Dict,
         is_icon: bool = True,
+        draw_marker: bool = True,
     ) -> Tuple[np.ndarray, Dict]:
         """
         Create a padded crop around an item with context.
@@ -199,8 +200,9 @@ class LLMMatcherService:
         # Calculate center in crop coordinates
         center_in_crop = (cx - x1, cy - y1)
 
-        # Draw marker at center (MAGENTA crosshair)
-        cv2.drawMarker(crop, center_in_crop, (255, 0, 255), cv2.MARKER_CROSS, 30, 3)
+        # Draw marker at center (MAGENTA crosshair) - optional
+        if draw_marker:
+            cv2.drawMarker(crop, center_in_crop, (255, 0, 255), cv2.MARKER_CROSS, 30, 3)
 
         crop_info = {
             "x1": x1,
@@ -597,7 +599,7 @@ You MUST respond with VALID JSON in this exact format:
 
 **TASK:** Find the ICON that this label belongs to.
 
-**Label/Tag:** {tag_name} (marked with MAGENTA crosshair +)
+**Label/Tag:** {tag_name} (marked with MAGENTA box)
 
 **Note:** Already matched pairs have been removed (white patches). Look for visible icons only.
 
@@ -605,7 +607,7 @@ You MUST respond with VALID JSON in this exact format:
 {icons_list}
 
 **Instructions:**
-1. Look at the tag/label marked with the MAGENTA crosshair
+1. Look at the tag/label marked with the MAGENTA box
 2. Search the surrounding area for a nearby icon (symbol) that this label identifies
 3. The icon should be near the tag (typically within a few icon-widths)
 4. Choose ONLY from the available icon types listed above
@@ -1115,18 +1117,21 @@ You MUST respond with VALID JSON in this exact format:
                 
                 template_data = template_cache[template_id]
 
-                # Create search area crop for LLM (with magenta box on tag)
+                # Create search area crop for LLM (with magenta box on tag, no crosshair)
                 crop_llm, crop_info = self._create_padded_crop(
-                    image, center, padding_stats, is_icon=False
+                    image, center, padding_stats, is_icon=False, draw_marker=False
                 )
                 
-                # Draw magenta box around tag bbox in crop
+                # Draw magenta box around tag bbox in crop (with right padding for icon visibility)
                 tag_x_in_crop = int(tag_bbox[0] - crop_info["x1"])
                 tag_y_in_crop = int(tag_bbox[1] - crop_info["y1"])
+                tag_width = int(tag_bbox[2])
+                tag_height = int(tag_bbox[3])
+                right_padding = int(tag_width * 0.5)  # Add 50% of tag width as right padding
                 cv2.rectangle(
                     crop_llm,
                     (tag_x_in_crop, tag_y_in_crop),
-                    (tag_x_in_crop + int(tag_bbox[2]), tag_y_in_crop + int(tag_bbox[3])),
+                    (tag_x_in_crop + tag_width + right_padding, tag_y_in_crop + tag_height),
                     (255, 0, 255), 3
                 )
                 
