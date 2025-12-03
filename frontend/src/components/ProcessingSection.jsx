@@ -148,16 +148,50 @@ const ProcessingSection = () => {
     return labels.filter(d => d.verification_status === verificationFilter);
   }, [labelDetections, verificationFilter, overlapFilter, currentStage]);
 
-  // Filter matches
+  // Filter matches - stage-specific + user filter
+  // Also adds displayStatus to show original state for each stage
   const filteredMatches = useMemo(() => {
     const matchList = matches || [];
-    if (matchFilter === 'all') return matchList;
-    if (matchFilter === 'matched') return matchList.filter(m => m.match_status === 'matched');
-    if (matchFilter === 'unmatched') return matchList.filter(m => m.match_status !== 'matched');
-    if (matchFilter === 'llm_tag_for_icon') return matchList.filter(m => m.match_method === 'llm_tag_for_icon');
-    if (matchFilter === 'llm_icon_for_tag') return matchList.filter(m => m.match_method === 'llm_icon_for_tag');
-    return matchList;
-  }, [matches, matchFilter]);
+    
+    // First, filter by stage and add displayStatus to reflect original state
+    let stageFiltered = matchList;
+    if (currentStage === 3) {
+      // Basic Matching: Show all matches, but display their "original" status
+      // - llm_tag_for_icon matches were originally unmatched_icon
+      // - llm_icon_for_tag matches were originally unassigned_tag
+      stageFiltered = matchList.map(m => {
+        if (m.match_method === 'llm_tag_for_icon') {
+          return { ...m, displayStatus: 'unmatched_icon' };
+        }
+        if (m.match_method === 'llm_icon_for_tag') {
+          return { ...m, displayStatus: 'unassigned_tag' };
+        }
+        return { ...m, displayStatus: m.match_status };
+      });
+    } else if (currentStage === 4) {
+      // Tag Matching: Show distance + tag-for-icon matches
+      // - llm_icon_for_tag matches were originally unassigned_tag
+      stageFiltered = matchList
+        .filter(m => m.match_method === 'distance' || m.match_method === 'llm_tag_for_icon')
+        .map(m => ({ ...m, displayStatus: m.match_status }));
+      // Also include llm_icon_for_tag as unassigned for display
+      const iconForTagMatches = matchList
+        .filter(m => m.match_method === 'llm_icon_for_tag')
+        .map(m => ({ ...m, displayStatus: 'unassigned_tag' }));
+      stageFiltered = [...stageFiltered, ...iconForTagMatches];
+    } else {
+      // Stage 5 (Icon Matching): Show all matches with actual status
+      stageFiltered = matchList.map(m => ({ ...m, displayStatus: m.match_status }));
+    }
+    
+    // Then apply user filter (use displayStatus for filtering)
+    if (matchFilter === 'all') return stageFiltered;
+    if (matchFilter === 'matched') return stageFiltered.filter(m => m.displayStatus === 'matched');
+    if (matchFilter === 'unmatched') return stageFiltered.filter(m => m.displayStatus !== 'matched');
+    if (matchFilter === 'llm_tag_for_icon') return stageFiltered.filter(m => m.match_method === 'llm_tag_for_icon');
+    if (matchFilter === 'llm_icon_for_tag') return stageFiltered.filter(m => m.match_method === 'llm_icon_for_tag');
+    return stageFiltered;
+  }, [matches, matchFilter, currentStage]);
 
   // Get stage status counts with detailed breakdown
   const stageCounts = useMemo(() => {
@@ -195,10 +229,42 @@ const ProcessingSection = () => {
     const iconsFinal = iconVerified;
     const labelsFinal = labelVerified;
     
-    // Matching breakdown
-    const matchedCount = matchList.filter(m => m.match_status === 'matched').length;
-    const unmatchedIconsCount = matchList.filter(m => m.match_status === 'unmatched_icon').length;
-    const unassignedTagsCount = matchList.filter(m => m.match_status === 'unassigned_tag').length;
+    // Stage-specific matching breakdown
+    // Calculate stats to reflect what each stage produced
+    let matchedCount = 0;
+    let unmatchedIconsCount = 0;
+    let unassignedTagsCount = 0;
+    
+    const distanceMatches = matchList.filter(m => m.match_method === 'distance');
+    const tagForIconMatches = matchList.filter(m => m.match_method === 'llm_tag_for_icon');
+    const iconForTagMatches = matchList.filter(m => m.match_method === 'llm_icon_for_tag');
+    
+    if (currentStage === 3) {
+      // Basic Matching: Show original state after basic matching
+      // - matched = distance matches that are matched
+      // - unmatched_icon = distance unmatched_icon + llm_tag_for_icon (these were originally unmatched icons)
+      // - unassigned_tag = distance unassigned_tag + llm_icon_for_tag (these were originally unassigned tags)
+      matchedCount = distanceMatches.filter(m => m.match_status === 'matched').length;
+      unmatchedIconsCount = distanceMatches.filter(m => m.match_status === 'unmatched_icon').length 
+                         + tagForIconMatches.length; // Were originally unmatched icons
+      unassignedTagsCount = distanceMatches.filter(m => m.match_status === 'unassigned_tag').length
+                         + iconForTagMatches.length; // Were originally unassigned tags
+    } else if (currentStage === 4) {
+      // Tag Matching: Show state after tag matching
+      // - matched = distance matched + llm_tag_for_icon matched
+      // - unmatched_icon = remaining distance unmatched_icon
+      // - unassigned_tag = distance unassigned_tag + llm_icon_for_tag (still unassigned at this stage)
+      matchedCount = distanceMatches.filter(m => m.match_status === 'matched').length
+                   + tagForIconMatches.filter(m => m.match_status === 'matched').length;
+      unmatchedIconsCount = distanceMatches.filter(m => m.match_status === 'unmatched_icon').length;
+      unassignedTagsCount = distanceMatches.filter(m => m.match_status === 'unassigned_tag').length
+                         + iconForTagMatches.length; // Were originally unassigned tags
+    } else {
+      // Stage 5 (Icon Matching) or others: Show all current stats
+      matchedCount = matchList.filter(m => m.match_status === 'matched').length;
+      unmatchedIconsCount = matchList.filter(m => m.match_status === 'unmatched_icon').length;
+      unassignedTagsCount = matchList.filter(m => m.match_status === 'unassigned_tag').length;
+    }
     
     return {
       // Raw counts
@@ -222,13 +288,13 @@ const ProcessingSection = () => {
       labelsAfterOverlap,
       labelsRemovedByOverlap,
       
-      // Matching
+      // Matching (stage-specific)
       matched: matchedCount,
       unmatchedIcons: unmatchedIconsCount,
       unassignedTags: unassignedTagsCount,
-      total: matchList.length,
+      total: matchedCount + unmatchedIconsCount + unassignedTagsCount,
     };
-  }, [iconDetections, labelDetections, matches]);
+  }, [iconDetections, labelDetections, matches, currentStage]);
 
   // PDF URL
   const pdfUrl = selectedProject ? api.getProjectPdf(selectedProject.id) : null;
@@ -344,26 +410,80 @@ const ProcessingSection = () => {
       const iconMap = new Map((iconDetections || []).map(d => [d.id, d]));
       const labelMap = new Map((labelDetections || []).map(d => [d.id, d]));
       
-      filteredMatches.forEach((match, index) => {
-        const icon = iconMap.get(match.icon_detection_id);
+      // Track drawn items to avoid duplicates (same tag/icon in multiple matches)
+      const drawnIconIds = new Set();
+      const drawnLabelIds = new Set();
+      
+      // Sort matches so distance matches are processed first (they have priority)
+      const sortedMatches = [...filteredMatches].sort((a, b) => {
+        if (a.match_method === 'distance' && b.match_method !== 'distance') return -1;
+        if (a.match_method !== 'distance' && b.match_method === 'distance') return 1;
+        return 0;
+      });
+      
+      sortedMatches.forEach((match, index) => {
+        const icon = match.icon_detection_id ? iconMap.get(match.icon_detection_id) : null;
         const label = match.label_detection_id ? labelMap.get(match.label_detection_id) : null;
-        const color = match.match_status === 'matched' ? '#22c55e' : '#f59e0b';
         
-        if (showIcons && icon) {
+        // Determine colors based on stage and match type
+        // For some stages, icon and label need different colors
+        let iconColor, labelColor;
+        const status = match.displayStatus || match.match_status;
+        
+        if (stage === 'matching') {
+          // Basic Matching: Show original state
+          if (match.match_method === 'llm_tag_for_icon') {
+            // Icon was unmatched (orange), tag was unassigned (purple)
+            iconColor = '#f59e0b';
+            labelColor = '#a855f7';
+          } else if (match.match_method === 'llm_icon_for_tag') {
+            // Icon didn't exist yet, tag was unassigned (purple)
+            iconColor = null; // Don't draw
+            labelColor = '#a855f7';
+          } else {
+            // Distance matches - use actual status
+            iconColor = labelColor = status === 'matched' ? '#22c55e' 
+              : status === 'unmatched_icon' ? '#f59e0b' 
+              : status === 'unassigned_tag' ? '#a855f7' 
+              : '#f59e0b';
+          }
+        } else if (stage === 'tag-matching') {
+          // Tag Matching: llm_icon_for_tag icons didn't exist yet
+          if (match.match_method === 'llm_icon_for_tag') {
+            iconColor = null; // Don't draw
+            labelColor = '#a855f7'; // Tag was unassigned
+          } else {
+            iconColor = labelColor = status === 'matched' ? '#22c55e' 
+              : status === 'unmatched_icon' ? '#f59e0b' 
+              : status === 'unassigned_tag' ? '#a855f7' 
+              : '#f59e0b';
+          }
+        } else {
+          // Icon Matching: Show actual current state
+          iconColor = labelColor = status === 'matched' ? '#22c55e' 
+            : status === 'unmatched_icon' ? '#f59e0b' 
+            : status === 'unassigned_tag' ? '#a855f7' 
+            : '#f59e0b';
+        }
+        
+        if (showIcons && icon && iconColor && !drawnIconIds.has(icon.id)) {
+          drawnIconIds.add(icon.id);
           boxes.push({
             id: `match-icon-${match.id}`,
             bbox_normalized: icon.bbox_normalized,
             page_number: icon.page_number,
-            color,
+            color: iconColor,
             label: match.llm_assigned_label || null,
           });
         }
-        if (showLabels && label) {
+        if (showLabels && label && labelColor && !drawnLabelIds.has(label.id)) {
+          drawnLabelIds.add(label.id);
           boxes.push({
             id: `match-label-${match.id}`,
             bbox_normalized: label.bbox_normalized,
             page_number: label.page_number,
-            color,
+            color: labelColor,
+            label: label.tag_name || null,
           });
         }
       });
@@ -843,14 +963,27 @@ const ProcessingSection = () => {
           {currentStage >= 3 && (
             <div className="flex items-center gap-4 flex-wrap">
               <span className="text-sm font-medium text-gray-700">Filter:</span>
-              {MATCH_FILTERS.map(f => {
+              {MATCH_FILTERS
+                .filter(f => {
+                  // Basic Matching: only show All, Matched, Unmatched
+                  if (currentStage === 3) {
+                    return ['all', 'matched', 'unmatched'].includes(f.key);
+                  }
+                  // Tag Matching: show All, Matched, Unmatched, AI Tag→Icon
+                  if (currentStage === 4) {
+                    return ['all', 'matched', 'unmatched', 'llm_tag_for_icon'].includes(f.key);
+                  }
+                  // Icon Matching: show all filters
+                  return true;
+                })
+                .map(f => {
                 let count = 0;
                 const matchList = matches || [];
                 if (f.key === 'all') count = stageCounts.total;
                 else if (f.key === 'matched') count = stageCounts.matched;
                 else if (f.key === 'unmatched') count = stageCounts.unmatchedIcons + stageCounts.unassignedTags;
-                else if (f.key === 'llm_tag_for_icon') count = matchList.filter(m => m.match_method === 'llm_matched' && m.label_detection_id).length;
-                else if (f.key === 'llm_icon_for_tag') count = matchList.filter(m => m.match_method === 'llm_matched' && !m.label_detection_id).length;
+                else if (f.key === 'llm_tag_for_icon') count = matchList.filter(m => m.match_method === 'llm_tag_for_icon').length;
+                else if (f.key === 'llm_icon_for_tag') count = matchList.filter(m => m.match_method === 'llm_icon_for_tag').length;
                 return (
                   <button
                     key={f.key}
@@ -1190,8 +1323,8 @@ const ProcessingSection = () => {
                   </div>
                 )}
                 {stageCounts.unassignedTags > 0 && (
-                  <div className="flex justify-between text-amber-600">
-                    <span>⚠️ Unassigned Tags:</span>
+                  <div className="flex justify-between text-purple-600">
+                    <span>🏷️ Unassigned Tags:</span>
                     <span className="font-medium">{stageCounts.unassignedTags}</span>
                   </div>
                 )}
@@ -1204,30 +1337,50 @@ const ProcessingSection = () => {
                 </div>
               ) : (
                 filteredMatches.map((match, index) => {
-                  const icon = (iconDetections || []).find(d => d.id === match.icon_detection_id);
+                  const icon = match.icon_detection_id 
+                    ? (iconDetections || []).find(d => d.id === match.icon_detection_id) 
+                    : null;
+                  const label = match.label_detection_id 
+                    ? (labelDetections || []).find(d => d.id === match.label_detection_id) 
+                    : null;
+                  
+                  // Get page number from icon or label (for unassigned tags)
+                  const pageNumber = icon?.page_number || label?.page_number;
+                  
+                  // Status badge styles
+                  const statusStyles = {
+                    'matched': 'bg-green-100 text-green-700',
+                    'unmatched_icon': 'bg-yellow-100 text-yellow-700',
+                    'unassigned_tag': 'bg-purple-100 text-purple-700',
+                  };
+                  
                   return (
                     <div
                       key={match.id}
-                      onClick={() => icon && setScrollToPage(icon.page_number)}
+                      onClick={() => pageNumber && setScrollToPage(pageNumber)}
                       className="p-2 rounded border border-gray-200 text-xs cursor-pointer hover:bg-gray-50"
                     >
                       <div className="flex items-center justify-between">
-                        <span className="font-medium">Match #{index + 1}</span>
+                        <span className="font-medium">
+                          {match.match_status === 'unassigned_tag' 
+                            ? `Tag: ${label?.tag_name || 'Unknown'}` 
+                            : `Match #${index + 1}`}
+                        </span>
                         <div className="flex gap-1">
-                          {match.match_method?.includes('llm') && (
+                          {(match.match_method === 'llm_tag_for_icon' || match.match_method === 'llm_icon_for_tag') && (
                             <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded text-[10px]">AI</span>
                           )}
                           <span className={`px-1.5 py-0.5 rounded text-[10px] ${
-                            match.match_status === 'matched' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'
+                            statusStyles[match.match_status] || 'bg-gray-100 text-gray-700'
                           }`}>
-                            {match.match_status}
+                            {match.match_status === 'unassigned_tag' ? 'no icon' : match.match_status}
                           </span>
                         </div>
                       </div>
                       <div className="text-gray-500 mt-1">
-                        Page {icon?.page_number || '?'} | 
+                        Page {pageNumber || '?'}
                         {match.llm_assigned_label && <span className="text-purple-600 ml-1">"{match.llm_assigned_label}"</span>}
-                        {match.distance > 0 && <span className="ml-1">Dist: {match.distance.toFixed(0)}px</span>}
+                        {match.distance > 0 && <span className="ml-1">| Dist: {match.distance.toFixed(0)}px</span>}
                       </div>
                     </div>
                   );

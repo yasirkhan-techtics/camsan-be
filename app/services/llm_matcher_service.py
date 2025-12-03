@@ -896,23 +896,15 @@ You MUST respond with VALID JSON in this exact format:
                         print(f"         ⚠️ Invalid tag '{matched_tag}' not in available tags, skipping...")
                         continue
                     
-                    # Find closest unassigned tag detection for this tag name
-                    remaining_tags = [t for t in unassigned_tags if t.id not in used_tag_ids]
-                    closest_result = self._find_closest_tag_detection(
-                        matched_tag, center, remaining_tags
-                    )
+                    # NOTE: We intentionally do NOT link to a physical tag detection
+                    # The LLM-assigned label is stored for display on the icon's bounding box,
+                    # but the tag detection remains unassigned (available for other matches)
+                    # This prevents incorrectly linking to the wrong tag instance
                     
-                    distance = 0.0
-                    if closest_result:
-                        closest_tag, distance = closest_result
-                        # Link to the physical tag detection
-                        match.label_detection_id = closest_tag.id
-                        match.distance = distance
-                        used_tag_ids.add(closest_tag.id)
-                        print(f"         📍 Linked to tag detection at distance {distance:.1f}px")
-                    
-                    # Update match with LLM-assigned label
+                    # Update match with LLM-assigned label (display only, no physical link)
                     match.llm_assigned_label = matched_tag
+                    match.label_detection_id = None  # Keep unlinked - tag name is in llm_assigned_label
+                    match.distance = 0.0
                     match.match_confidence = 0.85 if result.confidence == "high" else 0.70 if result.confidence == "medium" else 0.55
                     match.match_method = "llm_tag_for_icon"  # Phase 5: Tag matching for icons
                     match.match_status = "matched"
@@ -923,7 +915,7 @@ You MUST respond with VALID JSON in this exact format:
 
                     print(
                         f"         ✅ MATCHED to '{matched_tag}' "
-                        f"(conf={result.confidence}, dist={distance:.1f}px)"
+                        f"(conf={result.confidence}, label stored in llm_assigned_label)"
                     )
 
                 except Exception as e:
