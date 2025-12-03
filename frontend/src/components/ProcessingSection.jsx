@@ -634,10 +634,9 @@ const ProcessingSection = () => {
       });
     }
 
-    // For legend-counts stage, show selected row's detections
+    // For legend-counts stage, show selected row's icons only (not labels)
     if (stage === 'legend-counts' && selectedLegendRow) {
       const iconMap = new Map((iconDetections || []).map(d => [d.id, d]));
-      const labelMap = new Map((labelDetections || []).map(d => [d.id, d]));
       
       // Draw icons for selected legend row
       selectedLegendRow.iconDetectionIds.forEach(iconId => {
@@ -648,21 +647,7 @@ const ProcessingSection = () => {
             bbox_normalized: icon.bbox_normalized,
             page_number: icon.page_number,
             color: '#3b82f6', // Blue for selected legend items
-            label: selectedLegendRow.tagName,
-          });
-        }
-      });
-      
-      // Draw labels for selected legend row
-      selectedLegendRow.labelDetectionIds.forEach(labelId => {
-        const label = labelMap.get(labelId);
-        if (label) {
-          boxes.push({
-            id: `legend-label-${labelId}`,
-            bbox_normalized: label.bbox_normalized,
-            page_number: label.page_number,
-            color: '#3b82f6', // Blue for selected legend items
-            label: label.tag_name,
+            label: selectedLegendRow.tagName !== '(no matches)' ? selectedLegendRow.tagName : null,
           });
         }
       });
@@ -1215,27 +1200,29 @@ const ProcessingSection = () => {
             </div>
           )}
 
-          {/* View toggles */}
-          <div className="flex items-center gap-4 mt-2 pt-2 border-t">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showIcons}
-                onChange={(e) => setShowIcons(e.target.checked)}
-                className="w-4 h-4 text-green-600 rounded"
-              />
-              <span className="text-sm text-green-700">Show Icons</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showLabels}
-                onChange={(e) => setShowLabels(e.target.checked)}
-                className="w-4 h-4 text-blue-600 rounded"
-              />
-              <span className="text-sm text-blue-700">Show Labels</span>
-            </label>
-          </div>
+          {/* View toggles - hide for Legend Counts stage */}
+          {currentStage !== 6 && (
+            <div className="flex items-center gap-4 mt-2 pt-2 border-t">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showIcons}
+                  onChange={(e) => setShowIcons(e.target.checked)}
+                  className="w-4 h-4 text-green-600 rounded"
+                />
+                <span className="text-sm text-green-700">Show Icons</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showLabels}
+                  onChange={(e) => setShowLabels(e.target.checked)}
+                  className="w-4 h-4 text-blue-600 rounded"
+                />
+                <span className="text-sm text-blue-700">Show Labels</span>
+              </label>
+            </div>
+          )}
         </div>
 
         {/* PDF Viewer */}
