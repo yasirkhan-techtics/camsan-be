@@ -41,6 +41,12 @@ const STAGES = [
     description: 'Find icons for unlabeled tags using AI',
     icon: '🎯'
   },
+  { 
+    id: 'legend-counts', 
+    name: 'Legend Counts', 
+    description: 'Summary table of all matched icons and tags',
+    icon: '📊'
+  },
 ];
 
 const VERIFICATION_FILTERS = [
@@ -94,6 +100,7 @@ const ProcessingSection = () => {
   const [matchFilter, setMatchFilter] = useState('all');
   const [scrollToPage, setScrollToPage] = useState(null);
   const [selectedDetectionId, setSelectedDetectionId] = useState(null);
+  const [selectedLegendRow, setSelectedLegendRow] = useState(null); // For Legend Counts stage
   
   // Detection options
   const [searchSelectedOnly, setSearchSelectedOnly] = useState(false);
@@ -296,6 +303,144 @@ const ProcessingSection = () => {
     };
   }, [iconDetections, labelDetections, matches, currentStage]);
 
+  // Legend Counts - aggregate matches by icon template and tag
+  const legendCounts = useMemo(() => {
+    const matchList = matches || [];
+    const iconsList = iconDetections || [];
+    const tables = legendTables || [];
+    
+    // Build maps for lookups
+    const iconMap = new Map(iconsList.map(d => [d.id, d]));
+    const labelMap = new Map((labelDetections || []).map(d => [d.id, d]));
+    
+    // Helper to check if a detection is inside any legend table area
+    // bbox_normalized format: [ymin, xmin, ymax, xmax] in 0-1000 scale
+    const isInsideLegendTable = (detection) => {
+      if (!detection?.bbox_normalized) return false;
+      const [detY1, detX1, detY2, detX2] = detection.bbox_normalized;
+      const detCenterX = (detX1 + detX2) / 2;
+      const detCenterY = (detY1 + detY2) / 2;
+      
+      for (const table of tables) {
+        // Skip if not on same page (compare page_id directly)
+        if (table.page_id !== detection.page_id) continue;
+        
+        // Use bbox_normalized 
+        if (!table.bbox_normalized || table.bbox_normalized.length < 4) continue;
+        const [tableY1, tableX1, tableY2, tableX2] = table.bbox_normalized;
+        
+        // Check if detection center is inside legend table
+        if (detCenterX >= tableX1 && detCenterX <= tableX2 &&
+            detCenterY >= tableY1 && detCenterY <= tableY2) {
+          console.log(`Detection inside legend table: det center (${detCenterX.toFixed(0)}, ${detCenterY.toFixed(0)}) inside table (${tableX1.toFixed(0)}-${tableX2.toFixed(0)}, ${tableY1.toFixed(0)}-${tableY2.toFixed(0)})`);
+          return true;
+        }
+      }
+      return false;
+    };
+    
+    // Group matches by icon template and tag
+    const countsMap = new Map(); // key: `${iconTemplateId}-${tagName}`, value: { ... }
+    
+    // Track which icon templates have at least one valid (non-legend-area) match
+    const iconTemplatesWithMatches = new Set();
+    
+    // Debug: log legend tables info
+    console.log(`[LegendCounts] Tables: ${tables.length}, checking detections against legend areas`);
+    tables.forEach((t, i) => {
+      console.log(`  Table ${i}: page_id=${t.page_id}, bbox_normalized=${JSON.stringify(t.bbox_normalized)}`);
+    });
+    
+    let filteredOutCount = 0;
+    matchList.forEach(match => {
+      if (match.match_status !== 'matched') return;
+      
+      const icon = match.icon_detection_id ? iconMap.get(match.icon_detection_id) : null;
+      const label = match.label_detection_id ? labelMap.get(match.label_detection_id) : null;
+      
+      // Skip detections inside legend table areas
+      if (icon && isInsideLegendTable(icon)) {
+        filteredOutCount++;
+        return;
+      }
+      if (label && isInsideLegendTable(label)) {
+        filteredOutCount++;
+        return;
+      }
+      
+      const tagName = match.llm_assigned_label || label?.tag_name;
+      
+      if (!icon && !tagName) return;
+      
+      // Get icon template info
+      const iconTemplateId = icon?.icon_template_id || 'unknown';
+      const legendItem = legendItems.find(item => item.icon_template?.id === iconTemplateId);
+      const legendItemId = legendItem?.id;
+      const iconDescription = legendItem?.description || 'Unknown Icon';
+      
+      const key = `${iconTemplateId}-${tagName || 'untagged'}`;
+      
+      if (!countsMap.has(key)) {
+        countsMap.set(key, {
+          key,
+          iconTemplateId,
+          legendItemId,
+          iconDescription,
+          tagName: tagName || '(no tag)',
+          count: 0,
+          matchIds: [],
+          iconDetectionIds: [],
+          labelDetectionIds: [],
+        });
+      }
+      
+      const entry = countsMap.get(key);
+      entry.count += 1;
+      entry.matchIds.push(match.id);
+      if (match.icon_detection_id) entry.iconDetectionIds.push(match.icon_detection_id);
+      if (match.label_detection_id) entry.labelDetectionIds.push(match.label_detection_id);
+      
+      // Mark this icon template as having valid matches
+      iconTemplatesWithMatches.add(iconTemplateId);
+    });
+    
+    console.log(`[LegendCounts] Filtered out ${filteredOutCount} detections in legend areas`);
+    
+    // Add zero-count entries for legend items without any valid matches
+    legendItems.forEach(item => {
+      if (!item.icon_template?.id) return;
+      const iconTemplateId = item.icon_template.id;
+      
+      // Skip if this icon template already has matches in the countsMap
+      if (iconTemplatesWithMatches.has(iconTemplateId)) return;
+      
+      const key = `${iconTemplateId}-(no matches)`;
+      countsMap.set(key, {
+        key,
+        iconTemplateId,
+        legendItemId: item.id,
+        iconDescription: item.description || 'Unknown Icon',
+        tagName: '(no matches)',
+        count: 0,
+        matchIds: [],
+        iconDetectionIds: [],
+        labelDetectionIds: [],
+      });
+    });
+    
+    // Convert to array and sort: items with counts first, then by description, then by tag
+    return Array.from(countsMap.values()).sort((a, b) => {
+      // Items with count > 0 come first
+      if (a.count > 0 && b.count === 0) return -1;
+      if (a.count === 0 && b.count > 0) return 1;
+      // Then sort by description
+      const descCompare = a.iconDescription.localeCompare(b.iconDescription);
+      if (descCompare !== 0) return descCompare;
+      // Then by tag
+      return (a.tagName || '').localeCompare(b.tagName || '');
+    });
+  }, [matches, iconDetections, labelDetections, legendItems, legendTables, pdfPages]);
+
   // PDF URL
   const pdfUrl = selectedProject ? api.getProjectPdf(selectedProject.id) : null;
 
@@ -489,8 +634,42 @@ const ProcessingSection = () => {
       });
     }
 
+    // For legend-counts stage, show selected row's detections
+    if (stage === 'legend-counts' && selectedLegendRow) {
+      const iconMap = new Map((iconDetections || []).map(d => [d.id, d]));
+      const labelMap = new Map((labelDetections || []).map(d => [d.id, d]));
+      
+      // Draw icons for selected legend row
+      selectedLegendRow.iconDetectionIds.forEach(iconId => {
+        const icon = iconMap.get(iconId);
+        if (icon) {
+          boxes.push({
+            id: `legend-icon-${iconId}`,
+            bbox_normalized: icon.bbox_normalized,
+            page_number: icon.page_number,
+            color: '#3b82f6', // Blue for selected legend items
+            label: selectedLegendRow.tagName,
+          });
+        }
+      });
+      
+      // Draw labels for selected legend row
+      selectedLegendRow.labelDetectionIds.forEach(labelId => {
+        const label = labelMap.get(labelId);
+        if (label) {
+          boxes.push({
+            id: `legend-label-${labelId}`,
+            bbox_normalized: label.bbox_normalized,
+            page_number: label.page_number,
+            color: '#3b82f6', // Blue for selected legend items
+            label: label.tag_name,
+          });
+        }
+      });
+    }
+
     return boxes;
-  }, [currentStage, showIcons, showLabels, filteredIconDetections, filteredLabelDetections, filteredMatches, selectedDetectionId, iconDetections, labelDetections]);
+  }, [currentStage, showIcons, showLabels, filteredIconDetections, filteredLabelDetections, filteredMatches, selectedDetectionId, iconDetections, labelDetections, selectedLegendRow]);
 
   // Toggle legend item selection
   const toggleLegendItemSelection = (itemId) => {
@@ -959,8 +1138,31 @@ const ProcessingSection = () => {
             </div>
           )}
 
-          {/* Matching stage filters */}
-          {currentStage >= 3 && (
+          {/* Legend Counts stage header */}
+          {currentStage === 6 && (
+            <div className="flex items-center gap-4 flex-wrap">
+              <span className="text-sm font-medium text-gray-700">📊 Legend Counts Summary</span>
+              <div className="ml-auto flex items-center gap-3">
+                <div className="flex items-center gap-2 bg-blue-50 px-3 py-1 rounded-lg border border-blue-200">
+                  <span className="text-blue-600 font-medium">{legendCounts.length}</span>
+                  <span className="text-xs text-blue-500">unique pairs</span>
+                </div>
+                <div className="flex items-center gap-2 bg-green-50 px-3 py-1 rounded-lg border border-green-200">
+                  <span className="text-green-600 font-medium">{legendCounts.reduce((sum, row) => sum + row.count, 0)}</span>
+                  <span className="text-xs text-green-500">total matched</span>
+                </div>
+                {selectedLegendRow && (
+                  <div className="flex items-center gap-2 bg-indigo-50 px-3 py-1 rounded-lg border border-indigo-200">
+                    <span className="text-indigo-600 font-medium">"{selectedLegendRow.tagName}"</span>
+                    <span className="text-xs text-indigo-500">selected ({selectedLegendRow.count})</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Matching stage filters (stages 3-5 only) */}
+          {currentStage >= 3 && currentStage <= 5 && (
             <div className="flex items-center gap-4 flex-wrap">
               <span className="text-sm font-medium text-gray-700">Filter:</span>
               {MATCH_FILTERS
@@ -1300,8 +1502,8 @@ const ProcessingSection = () => {
           </>
         )}
 
-        {/* Matching stages: Match list */}
-        {currentStage >= 3 && (
+        {/* Matching stages: Match list (stages 3-5 only) */}
+        {currentStage >= 3 && currentStage <= 5 && (
           <>
             <div className="p-4 border-b bg-gray-50">
               <h3 className="font-semibold text-gray-800">
@@ -1385,6 +1587,106 @@ const ProcessingSection = () => {
                     </div>
                   );
                 })
+              )}
+            </div>
+          </>
+        )}
+
+        {/* Legend Counts stage: Summary table */}
+        {currentStage === 6 && (
+          <>
+            <div className="p-4 border-b bg-gray-50">
+              <h3 className="font-semibold text-gray-800">📊 Legend Counts</h3>
+              <p className="text-xs text-gray-500 mt-1">
+                Summary of all matched icons and tags. Click a row to highlight on PDF.
+              </p>
+              <div className="text-xs mt-2 space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Total rows:</span>
+                  <span className="font-medium">{legendCounts.length}</span>
+                </div>
+                <div className="flex justify-between text-green-600">
+                  <span>Total matched pairs:</span>
+                  <span className="font-medium">{legendCounts.reduce((sum, row) => sum + row.count, 0)}</span>
+                </div>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {legendCounts.length === 0 ? (
+                <div className="text-center text-gray-500 py-8 text-sm p-4">
+                  No matches found. Run matching stages first.
+                </div>
+              ) : (
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-100 sticky top-0">
+                    <tr>
+                      <th className="p-2 text-left font-semibold text-gray-700">Icon</th>
+                      <th className="p-2 text-left font-semibold text-gray-700">Tag</th>
+                      <th className="p-2 text-center font-semibold text-gray-700">Count</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {legendCounts.map((row, index) => (
+                      <tr
+                        key={row.key}
+                        onClick={() => {
+                          if (row.count === 0) return; // Don't select rows with no matches
+                          setSelectedLegendRow(selectedLegendRow?.key === row.key ? null : row);
+                          // Scroll to first detection
+                          if (row.iconDetectionIds.length > 0) {
+                            const icon = (iconDetections || []).find(d => d.id === row.iconDetectionIds[0]);
+                            if (icon) setScrollToPage(icon.page_number);
+                          }
+                        }}
+                        className={`
+                          border-b border-gray-100 transition-colors
+                          ${row.count === 0 
+                            ? 'bg-gray-50 opacity-60' 
+                            : selectedLegendRow?.key === row.key 
+                              ? 'bg-blue-100 hover:bg-blue-150 cursor-pointer' 
+                              : 'hover:bg-gray-50 cursor-pointer'}
+                        `}
+                      >
+                        <td className="p-2">
+                          <div className={`flex items-center gap-2 ${row.count === 0 ? 'opacity-50' : ''}`}>
+                            {row.legendItemId ? (
+                              <img 
+                                src={api.getIconTemplateImage(row.legendItemId)}
+                                alt={row.iconDescription}
+                                className="w-8 h-8 object-contain border border-gray-200 rounded bg-white"
+                                onError={(e) => { e.target.style.display = 'none'; }}
+                              />
+                            ) : (
+                              <div className="w-8 h-8 bg-gray-200 rounded flex items-center justify-center text-gray-400">
+                                ?
+                              </div>
+                            )}
+                            <span className={`truncate max-w-[100px] ${row.count === 0 ? 'text-gray-400' : 'text-gray-700'}`} title={row.iconDescription}>
+                              {row.iconDescription}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="p-2">
+                          <span className={`
+                            px-2 py-0.5 rounded text-[10px] font-medium
+                            ${row.count === 0 
+                              ? 'bg-gray-100 text-gray-400' 
+                              : row.tagName === '(no tag)' 
+                                ? 'bg-gray-100 text-gray-500' 
+                                : 'bg-blue-100 text-blue-700'}
+                          `}>
+                            {row.tagName}
+                          </span>
+                        </td>
+                        <td className="p-2 text-center">
+                          <span className={`font-bold ${row.count === 0 ? 'text-gray-400' : 'text-gray-800'}`}>
+                            {row.count}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               )}
             </div>
           </>
