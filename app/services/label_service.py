@@ -201,14 +201,20 @@ class LabelService:
         self.db.refresh(label_template)
         return label_template
 
-    def detect_labels(self, project: Project) -> List[LabelDetection]:
-        templates = (
+    def detect_labels(self, project: Project, legend_item_ids: List[UUID] = None) -> List[LabelDetection]:
+        query = (
             self.db.query(LabelTemplate)
             .join(LegendItem)
             .join(LegendItem.legend_table)
             .filter(LegendItem.legend_table.has(project_id=project.id))
-            .all()
         )
+        
+        # Filter by specific legend items if provided
+        if legend_item_ids:
+            query = query.filter(LabelTemplate.legend_item_id.in_(legend_item_ids))
+            print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
+        
+        templates = query.all()
         if not templates:
             raise HTTPException(status_code=400, detail="No label templates available.")
 
@@ -234,22 +240,35 @@ class LabelService:
 
         # First, delete any icon_label_matches that reference these label detections
         from models.detection import IconLabelMatch
-        label_detection_ids = [
-            d.id for d in self.db.query(LabelDetection.id).filter(
-                LabelDetection.project_id == project.id
-            ).all()
-        ]
+        
+        # Build query for detections to delete - filter by legend_item_ids if provided
+        detection_query = self.db.query(LabelDetection.id).filter(
+            LabelDetection.project_id == project.id
+        )
+        if legend_item_ids:
+            # Only delete detections for the specific legend items being re-processed
+            template_ids = [t.id for t in templates]
+            detection_query = detection_query.filter(
+                LabelDetection.label_template_id.in_(template_ids)
+            )
+            print(f"   📌 Only clearing detections for {len(template_ids)} selected template(s)")
+        
+        label_detection_ids = [d.id for d in detection_query.all()]
+        
         if label_detection_ids:
             self.db.query(IconLabelMatch).filter(
                 IconLabelMatch.label_detection_id.in_(label_detection_ids)
             ).delete(synchronize_session=False)
             self.db.commit()
         
-        # Now delete the label detections
-        self.db.query(LabelDetection).filter(
-            LabelDetection.project_id == project.id
-        ).delete()
-        self.db.commit()
+            # Now delete the label detections (only the filtered ones)
+            self.db.query(LabelDetection).filter(
+                LabelDetection.id.in_(label_detection_ids)
+            ).delete(synchronize_session=False)
+            self.db.commit()
+            print(f"   ✅ Cleared {len(label_detection_ids)} old detection(s)")
+        else:
+            print(f"   ✅ No old detections to clear")
 
         scale_values = self._generate_scales(
             settings.label_scale_min, settings.label_scale_max, step=0.1

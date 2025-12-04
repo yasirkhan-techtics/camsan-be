@@ -101,6 +101,7 @@ const ProcessingSection = () => {
   const [scrollToPage, setScrollToPage] = useState(null);
   const [selectedDetectionId, setSelectedDetectionId] = useState(null);
   const [selectedLegendRow, setSelectedLegendRow] = useState(null); // For Legend Counts stage
+  const [selectedSidebarLegendItem, setSelectedSidebarLegendItem] = useState(null); // For filtering overlays by legend item
   
   // Detection options
   const [searchSelectedOnly, setSearchSelectedOnly] = useState(false);
@@ -119,6 +120,11 @@ const ProcessingSection = () => {
       fetchMatches();
     }
   }, [selectedProject]);
+
+  // Clear sidebar legend item selection when stage changes
+  useEffect(() => {
+    setSelectedSidebarLegendItem(null);
+  }, [currentStage]);
 
   // Filter detections based on current stage and filter
   const filteredIconDetections = useMemo(() => {
@@ -203,9 +209,27 @@ const ProcessingSection = () => {
   // Get stage status counts with detailed breakdown
   const stageCounts = useMemo(() => {
     // Safety checks for undefined arrays
-    const icons = iconDetections || [];
-    const labels = labelDetections || [];
-    const matchList = matches || [];
+    let icons = iconDetections || [];
+    let labels = labelDetections || [];
+    let matchList = matches || [];
+    
+    // Filter by selected legend item if one is selected
+    if (selectedSidebarLegendItem) {
+      const selectedIconTemplateId = selectedSidebarLegendItem.icon_template?.id;
+      const selectedLabelTemplateIds = (selectedSidebarLegendItem.label_templates || []).map(t => t.id);
+      
+      // Filter detections
+      icons = icons.filter(d => d.icon_template_id === selectedIconTemplateId);
+      labels = labels.filter(d => selectedLabelTemplateIds.includes(d.label_template_id));
+      
+      // Filter matches - include if either icon or label belongs to selected legend item
+      const filteredIconIds = new Set(icons.map(d => d.id));
+      const filteredLabelIds = new Set(labels.map(d => d.id));
+      matchList = matchList.filter(m => 
+        (m.icon_detection_id && filteredIconIds.has(m.icon_detection_id)) ||
+        (m.label_detection_id && filteredLabelIds.has(m.label_detection_id))
+      );
+    }
     
     // Icons breakdown
     const iconTotal = icons.length;
@@ -301,7 +325,7 @@ const ProcessingSection = () => {
       unassignedTags: unassignedTagsCount,
       total: matchedCount + unmatchedIconsCount + unassignedTagsCount,
     };
-  }, [iconDetections, labelDetections, matches, currentStage]);
+  }, [iconDetections, labelDetections, matches, currentStage, selectedSidebarLegendItem]);
 
   // Legend Counts - aggregate matches by icon template and tag
   const legendCounts = useMemo(() => {
@@ -511,42 +535,62 @@ const ProcessingSection = () => {
       return overlapping.sort((a, b) => b.confidence - a.confidence);
     };
 
+    // Build lookup maps for filtering by selected legend item
+    const selectedLegendItemTemplates = selectedSidebarLegendItem ? {
+      iconTemplateId: selectedSidebarLegendItem.icon_template?.id,
+      labelTemplateIds: (selectedSidebarLegendItem.label_templates || []).map(t => t.id),
+    } : null;
+
+    // Helper to check if a detection belongs to the selected legend item
+    const matchesSelectedLegendItem = (det, type) => {
+      if (!selectedLegendItemTemplates) return true; // No filter, show all
+      if (type === 'icon') {
+        return det.icon_template_id === selectedLegendItemTemplates.iconTemplateId;
+      } else {
+        return selectedLegendItemTemplates.labelTemplateIds.includes(det.label_template_id);
+      }
+    };
+
     // For detection and verification stages, show individual detections
     if (['detection', 'verification', 'overlap'].includes(stage)) {
       if (showIcons) {
-        filteredIconDetections.forEach(det => {
-          const isSelected = det.id === selectedDetectionId;
-          boxes.push({
-            id: `icon-${det.id}`,
-            bbox_normalized: det.bbox_normalized,
-            page_number: det.page_number,
-            color: getDetectionColor(det, isSelected),
-            confidence: det.confidence,
-            label: `🔷 ${Math.round(det.confidence * 100)}%`,  // Show icon confidence
+        filteredIconDetections
+          .filter(det => matchesSelectedLegendItem(det, 'icon'))
+          .forEach(det => {
+            const isSelected = det.id === selectedDetectionId;
+            boxes.push({
+              id: `icon-${det.id}`,
+              bbox_normalized: det.bbox_normalized,
+              page_number: det.page_number,
+              color: getDetectionColor(det, isSelected),
+              confidence: det.confidence,
+              label: `🔷 ${Math.round(det.confidence * 100)}%`,  // Show icon confidence
+            });
           });
-        });
       }
       if (showLabels) {
-        filteredLabelDetections.forEach(det => {
-          const isSelected = det.id === selectedDetectionId;
-          // Find all overlapping tags for this detection (only non-rejected tags)
-          // Don't calculate overlapping tags for rejected detections
-          const overlappingTags = det.verification_status !== 'rejected' 
-            ? findOverlappingTags(det, labelDetections) // Use all labelDetections to find overlaps
-            : [];
-          
-          boxes.push({
-            id: `label-${det.id}`,
-            bbox_normalized: det.bbox_normalized,
-            page_number: det.page_number,
-            color: getDetectionColor(det, isSelected),
-            confidence: det.confidence,
-            label: det.tag_name 
-              ? `${det.tag_name} (${Math.round(det.confidence * 100)}%)` 
-              : `${Math.round(det.confidence * 100)}%`,  // Show tag text + confidence
-            overlappingTags: overlappingTags.length > 1 ? overlappingTags : [], // Only show if multiple tags overlap
+        filteredLabelDetections
+          .filter(det => matchesSelectedLegendItem(det, 'label'))
+          .forEach(det => {
+            const isSelected = det.id === selectedDetectionId;
+            // Find all overlapping tags for this detection (only non-rejected tags)
+            // Don't calculate overlapping tags for rejected detections
+            const overlappingTags = det.verification_status !== 'rejected' 
+              ? findOverlappingTags(det, labelDetections) // Use all labelDetections to find overlaps
+              : [];
+            
+            boxes.push({
+              id: `label-${det.id}`,
+              bbox_normalized: det.bbox_normalized,
+              page_number: det.page_number,
+              color: getDetectionColor(det, isSelected),
+              confidence: det.confidence,
+              label: det.tag_name 
+                ? `${det.tag_name} (${Math.round(det.confidence * 100)}%)` 
+                : `${Math.round(det.confidence * 100)}%`,  // Show tag text + confidence
+              overlappingTags: overlappingTags.length > 1 ? overlappingTags : [], // Only show if multiple tags overlap
+            });
           });
-        });
       }
     }
     
@@ -569,6 +613,15 @@ const ProcessingSection = () => {
       sortedMatches.forEach((match, index) => {
         const icon = match.icon_detection_id ? iconMap.get(match.icon_detection_id) : null;
         const label = match.label_detection_id ? labelMap.get(match.label_detection_id) : null;
+        
+        // Filter by selected legend item
+        const iconMatchesFilter = icon ? matchesSelectedLegendItem(icon, 'icon') : true;
+        const labelMatchesFilter = label ? matchesSelectedLegendItem(label, 'label') : true;
+        
+        // If neither icon nor label matches the filter, skip this match
+        if (selectedLegendItemTemplates && !iconMatchesFilter && !labelMatchesFilter) {
+          return;
+        }
         
         // Determine colors based on stage and match type
         // For some stages, icon and label need different colors
@@ -611,7 +664,7 @@ const ProcessingSection = () => {
             : '#f59e0b';
         }
         
-        if (showIcons && icon && iconColor && !drawnIconIds.has(icon.id)) {
+        if (showIcons && icon && iconColor && !drawnIconIds.has(icon.id) && iconMatchesFilter) {
           drawnIconIds.add(icon.id);
           boxes.push({
             id: `match-icon-${match.id}`,
@@ -621,7 +674,7 @@ const ProcessingSection = () => {
             label: match.llm_assigned_label || null,
           });
         }
-        if (showLabels && label && labelColor && !drawnLabelIds.has(label.id)) {
+        if (showLabels && label && labelColor && !drawnLabelIds.has(label.id) && labelMatchesFilter) {
           drawnLabelIds.add(label.id);
           boxes.push({
             id: `match-label-${match.id}`,
@@ -654,7 +707,7 @@ const ProcessingSection = () => {
     }
 
     return boxes;
-  }, [currentStage, showIcons, showLabels, filteredIconDetections, filteredLabelDetections, filteredMatches, selectedDetectionId, iconDetections, labelDetections, selectedLegendRow]);
+  }, [currentStage, showIcons, showLabels, filteredIconDetections, filteredLabelDetections, filteredMatches, selectedDetectionId, iconDetections, labelDetections, selectedLegendRow, selectedSidebarLegendItem]);
 
   // Toggle legend item selection
   const toggleLegendItemSelection = (itemId) => {
@@ -698,14 +751,25 @@ const ProcessingSection = () => {
         }
       }
 
+      // Build legend item IDs filter if "search selected only" is enabled
+      const legendItemIdsToSearch = searchSelectedOnly && selectedLegendItemIds.size > 0
+        ? Array.from(selectedLegendItemIds)
+        : null;
+
       // Detect icons
-      setProcessingMessage('Detecting icons across all pages...');
-      const iconResponse = await api.detectIcons(selectedProject.id);
+      const iconMsg = searchSelectedOnly 
+        ? `Detecting icons for ${selectedLegendItemIds.size} selected item(s)...`
+        : 'Detecting icons across all pages...';
+      setProcessingMessage(iconMsg);
+      const iconResponse = await api.detectIcons(selectedProject.id, legendItemIdsToSearch);
       const iconCount = iconResponse.data?.length || 0;
 
       // Detect labels
-      setProcessingMessage('Detecting labels/tags across all pages...');
-      const labelResponse = await api.detectLabels(selectedProject.id);
+      const labelMsg = searchSelectedOnly 
+        ? `Detecting labels for ${selectedLegendItemIds.size} selected item(s)...`
+        : 'Detecting labels/tags across all pages...';
+      setProcessingMessage(labelMsg);
+      const labelResponse = await api.detectLabels(selectedProject.id, legendItemIdsToSearch);
       const labelCount = labelResponse.data?.length || 0;
 
       // Refresh data
@@ -728,20 +792,31 @@ const ProcessingSection = () => {
     setIsProcessing(true);
     setError(null);
     try {
+      // Build legend item IDs filter if "process selected only" is enabled
+      const legendItemIdsToProcess = searchSelectedOnly && selectedLegendItemIds.size > 0
+        ? Array.from(selectedLegendItemIds)
+        : null;
+      
       let iconResult = null;
       let labelResult = null;
 
       // Verify icons
       if ((iconDetections || []).length > 0) {
-        setProcessingMessage('AI verifying icon detections...');
-        const iconResponse = await api.verifyIconDetections(selectedProject.id);
+        const msg = searchSelectedOnly 
+          ? `AI verifying icons for ${selectedLegendItemIds.size} selected item(s)...`
+          : 'AI verifying icon detections...';
+        setProcessingMessage(msg);
+        const iconResponse = await api.verifyIconDetections(selectedProject.id, legendItemIdsToProcess);
         iconResult = iconResponse.data;
       }
 
       // Verify labels
       if ((labelDetections || []).length > 0) {
-        setProcessingMessage('AI verifying label detections...');
-        const labelResponse = await api.verifyLabelDetections(selectedProject.id);
+        const msg = searchSelectedOnly 
+          ? `AI verifying labels for ${selectedLegendItemIds.size} selected item(s)...`
+          : 'AI verifying label detections...';
+        setProcessingMessage(msg);
+        const labelResponse = await api.verifyLabelDetections(selectedProject.id, legendItemIdsToProcess);
         labelResult = labelResponse.data;
       }
 
@@ -765,8 +840,16 @@ const ProcessingSection = () => {
     setIsProcessing(true);
     setError(null);
     try {
-      setProcessingMessage('Resolving overlapping tag detections...');
-      const response = await api.resolveTagOverlaps(selectedProject.id);
+      // Build legend item IDs filter if "process selected only" is enabled
+      const legendItemIdsToProcess = searchSelectedOnly && selectedLegendItemIds.size > 0
+        ? Array.from(selectedLegendItemIds)
+        : null;
+      
+      const msg = searchSelectedOnly 
+        ? `Resolving overlaps for ${selectedLegendItemIds.size} selected item(s)...`
+        : 'Resolving overlapping tag detections...';
+      setProcessingMessage(msg);
+      const response = await api.resolveTagOverlaps(selectedProject.id, legendItemIdsToProcess);
       const result = response.data;
 
       // Refresh data
@@ -789,8 +872,16 @@ const ProcessingSection = () => {
     setIsProcessing(true);
     setError(null);
     try {
-      setProcessingMessage('Matching icons with tags by distance...');
-      const response = await api.matchIconsAndLabels(selectedProject.id);
+      // Build legend item IDs filter if "process selected only" is enabled
+      const legendItemIdsToProcess = searchSelectedOnly && selectedLegendItemIds.size > 0
+        ? Array.from(selectedLegendItemIds)
+        : null;
+      
+      const msg = searchSelectedOnly 
+        ? `Matching for ${selectedLegendItemIds.size} selected item(s)...`
+        : 'Matching icons with tags by distance...';
+      setProcessingMessage(msg);
+      const response = await api.matchIconsAndLabels(selectedProject.id, legendItemIdsToProcess);
 
       // Refresh data
       await fetchMatches();
@@ -813,8 +904,16 @@ const ProcessingSection = () => {
     setIsProcessing(true);
     setError(null);
     try {
-      setProcessingMessage('AI finding tags for unlabeled icons...');
-      const response = await api.matchTagsForIcons(selectedProject.id);
+      // Build legend item IDs filter if "process selected only" is enabled
+      const legendItemIdsToProcess = searchSelectedOnly && selectedLegendItemIds.size > 0
+        ? Array.from(selectedLegendItemIds)
+        : null;
+      
+      const msg = searchSelectedOnly 
+        ? `AI finding tags for ${selectedLegendItemIds.size} selected item(s)...`
+        : 'AI finding tags for unlabeled icons...';
+      setProcessingMessage(msg);
+      const response = await api.matchTagsForIcons(selectedProject.id, legendItemIdsToProcess);
       const result = response.data;
 
       // Refresh data
@@ -838,8 +937,16 @@ const ProcessingSection = () => {
     setIsProcessing(true);
     setError(null);
     try {
-      setProcessingMessage('AI finding icons for unlabeled tags...');
-      const response = await api.matchIconsForTags(selectedProject.id);
+      // Build legend item IDs filter if "process selected only" is enabled
+      const legendItemIdsToProcess = searchSelectedOnly && selectedLegendItemIds.size > 0
+        ? Array.from(selectedLegendItemIds)
+        : null;
+      
+      const msg = searchSelectedOnly 
+        ? `AI finding icons for ${selectedLegendItemIds.size} selected item(s)...`
+        : 'AI finding icons for unlabeled tags...';
+      setProcessingMessage(msg);
+      const response = await api.matchIconsForTags(selectedProject.id, legendItemIdsToProcess);
       const result = response.data;
 
       // Refresh data
@@ -997,9 +1104,9 @@ const ProcessingSection = () => {
 
         {/* Stage-specific controls */}
         <div className="bg-white border-b px-4 py-3">
-          {/* Detection stage options */}
-          {currentStage === 0 && (
-            <div className="flex items-center gap-4 flex-wrap">
+          {/* Process selected only option - shown for all processing stages (0-5) */}
+          {currentStage <= 5 && (
+            <div className="flex items-center gap-4 flex-wrap mb-3 pb-3 border-b border-gray-100">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
@@ -1007,22 +1114,26 @@ const ProcessingSection = () => {
                   onChange={(e) => setSearchSelectedOnly(e.target.checked)}
                   className="w-4 h-4 text-indigo-600 rounded"
                 />
-                <span className="text-sm text-gray-700">Search selected items only</span>
+                <span className="text-sm text-gray-700">Process selected items only</span>
               </label>
               {searchSelectedOnly && (
                 <span className="text-sm text-indigo-600">
                   ({selectedLegendItemIds.size} of {legendItems.length} selected)
                 </span>
               )}
-              <div className="ml-auto flex items-center gap-4">
-                <div className="flex items-center gap-2 bg-amber-50 px-3 py-1 rounded-lg border border-amber-200">
-                  <span className="text-amber-600 font-medium">🔷 {stageCounts.icons}</span>
-                  <span className="text-xs text-amber-500">icons detected</span>
-                </div>
-                <div className="flex items-center gap-2 bg-amber-50 px-3 py-1 rounded-lg border border-amber-200">
-                  <span className="text-amber-600 font-medium">📝 {stageCounts.labels}</span>
-                  <span className="text-xs text-amber-500">tags detected</span>
-                </div>
+            </div>
+          )}
+
+          {/* Detection stage stats */}
+          {currentStage === 0 && (
+            <div className="flex items-center gap-4 flex-wrap">
+              <div className="flex items-center gap-2 bg-amber-50 px-3 py-1 rounded-lg border border-amber-200">
+                <span className="text-amber-600 font-medium">🔷 {stageCounts.icons}</span>
+                <span className="text-xs text-amber-500">icons detected</span>
+              </div>
+              <div className="flex items-center gap-2 bg-amber-50 px-3 py-1 rounded-lg border border-amber-200">
+                <span className="text-amber-600 font-medium">📝 {stageCounts.labels}</span>
+                <span className="text-xs text-amber-500">tags detected</span>
               </div>
             </div>
           )}
@@ -1245,10 +1356,21 @@ const ProcessingSection = () => {
             <div className="p-4 border-b bg-gray-50">
               <h3 className="font-semibold text-gray-800">Legend Items</h3>
               <p className="text-xs text-gray-600 mt-1">
-                {searchSelectedOnly ? 'Select items to search' : 'All items will be searched'}
+                {selectedSidebarLegendItem 
+                  ? `Showing: ${selectedSidebarLegendItem.description || 'Selected item'}`
+                  : 'Click an item to filter overlays'}
               </p>
+              {selectedSidebarLegendItem && (
+                <button 
+                  onClick={() => setSelectedSidebarLegendItem(null)}
+                  className="mt-2 text-xs text-indigo-600 hover:underline"
+                >
+                  ✕ Clear filter (show all)
+                </button>
+              )}
               {searchSelectedOnly && (
-                <div className="flex gap-2 mt-2">
+                <div className="flex gap-2 mt-2 pt-2 border-t">
+                  <span className="text-xs text-gray-500">Search filter:</span>
                   <button onClick={selectAllLegendItems} className="text-xs text-indigo-600 hover:underline">Select All</button>
                   <button onClick={deselectAllLegendItems} className="text-xs text-gray-500 hover:underline">Clear</button>
                 </div>
@@ -1256,28 +1378,44 @@ const ProcessingSection = () => {
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-2">
               {legendItems.map((item, index) => {
-                const isSelected = selectedLegendItemIds.has(item.id);
+                const isCheckedForSearch = selectedLegendItemIds.has(item.id);
+                const isSelectedForOverlay = selectedSidebarLegendItem?.id === item.id;
                 const hasIcon = item.icon_template;
                 const hasTags = item.label_templates?.length > 0;
                 // Use cropped icon (preprocessed=false for reliability)
                 const iconUrl = hasIcon ? api.getIconTemplateImage(item.id, false) : null;
                 const tagNames = hasTags ? item.label_templates.map(t => t.tag_name || item.label_text).filter(Boolean) : [];
                 
+                // Calculate item-specific detection counts
+                const itemIconTemplateId = item.icon_template?.id;
+                const itemLabelTemplateIds = (item.label_templates || []).map(t => t.id);
+                const itemIconCount = (iconDetections || []).filter(d => d.icon_template_id === itemIconTemplateId).length;
+                const itemLabelCount = (labelDetections || []).filter(d => itemLabelTemplateIds.includes(d.label_template_id)).length;
+                
                 return (
                   <div
                     key={item.id}
-                    onClick={() => searchSelectedOnly && toggleLegendItemSelection(item.id)}
+                    onClick={() => {
+                      // Toggle overlay filter
+                      setSelectedSidebarLegendItem(isSelectedForOverlay ? null : item);
+                      // Scroll to first detection if selecting
+                      if (!isSelectedForOverlay) {
+                        const firstIconDet = (iconDetections || []).find(d => d.icon_template_id === itemIconTemplateId);
+                        const firstLabelDet = (labelDetections || []).find(d => itemLabelTemplateIds.includes(d.label_template_id));
+                        const firstDet = firstIconDet || firstLabelDet;
+                        if (firstDet) setScrollToPage(firstDet.page_number);
+                      }
+                    }}
                     className={`
-                      p-3 rounded-lg border text-sm transition-all
-                      ${searchSelectedOnly ? 'cursor-pointer' : ''}
-                      ${isSelected ? 'border-indigo-500 bg-indigo-50 shadow-sm' : 'border-gray-200 hover:border-gray-300'}
+                      p-3 rounded-lg border text-sm transition-all cursor-pointer
+                      ${isSelectedForOverlay ? 'border-indigo-500 bg-indigo-50 shadow-sm' : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'}
                     `}
                   >
                     <div className="flex items-start gap-3">
                       {searchSelectedOnly && (
                         <input
                           type="checkbox"
-                          checked={isSelected}
+                          checked={isCheckedForSearch}
                           onChange={() => toggleLegendItemSelection(item.id)}
                           className="mt-1 w-4 h-4 text-indigo-600 rounded"
                           onClick={(e) => e.stopPropagation()}
@@ -1325,13 +1463,13 @@ const ProcessingSection = () => {
                           <div className="text-xs text-gray-400 mt-1.5">No tags defined</div>
                         )}
                         
-                        {/* Status badges */}
-                        <div className="flex gap-2 mt-2">
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${hasIcon ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                            {hasIcon ? '✓ Icon Ready' : '○ No Icon'}
+                        {/* Detection counts */}
+                        <div className="flex gap-2 mt-2 text-[10px]">
+                          <span className={`px-1.5 py-0.5 rounded ${itemIconCount > 0 ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                            🔷 {itemIconCount} icons
                           </span>
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${hasTags ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
-                            {hasTags ? `✓ ${tagNames.length} Tag${tagNames.length > 1 ? 's' : ''}` : '○ No Tags'}
+                          <span className={`px-1.5 py-0.5 rounded ${itemLabelCount > 0 ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                            📝 {itemLabelCount} tags
                           </span>
                         </div>
                       </div>
@@ -1343,238 +1481,190 @@ const ProcessingSection = () => {
           </>
         )}
 
-        {/* Overlap Removal stage: Show removed vs kept */}
-        {currentStage === 1 && (
+        {/* Stages 1-5: Unified Legend Items sidebar */}
+        {currentStage >= 1 && currentStage <= 5 && (
           <>
             <div className="p-4 border-b bg-gray-50">
-              <h3 className="font-semibold text-gray-800">Overlap Removal Results</h3>
-              <div className="text-xs mt-2 space-y-1">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Before:</span>
-                  <span className="font-medium">{stageCounts.labels} tags</span>
-                </div>
-                <div className="flex justify-between text-red-600">
-                  <span>🗑️ Removed:</span>
-                  <span className="font-medium">-{stageCounts.labelsRemovedByOverlap}</span>
-                </div>
-                <div className="flex justify-between text-green-600 border-t pt-1">
-                  <span>✓ Remaining:</span>
-                  <span className="font-medium">{stageCounts.labelsAfterOverlap} tags</span>
-                </div>
-              </div>
-            </div>
-            <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {showLabels && filteredLabelDetections.map((det, index) => (
-                <div
-                  key={det.id}
-                  onClick={() => {
-                    setSelectedDetectionId(det.id);
-                    setScrollToPage(det.page_number);
-                  }}
-                  className={`
-                    p-2 rounded border text-xs cursor-pointer transition-all
-                    ${selectedDetectionId === det.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'}
-                  `}
+              <h3 className="font-semibold text-gray-800">Legend Items</h3>
+              <p className="text-xs text-gray-600 mt-1">
+                {selectedSidebarLegendItem 
+                  ? `Showing: ${selectedSidebarLegendItem.description || 'Selected item'}`
+                  : 'Click an item to filter overlays'}
+              </p>
+              {selectedSidebarLegendItem && (
+                <button 
+                  onClick={() => setSelectedSidebarLegendItem(null)}
+                  className="mt-2 text-xs text-indigo-600 hover:underline"
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium">
-                      📝 {det.tag_name ? `"${det.tag_name}"` : `Label #${index + 1}`}
-                    </span>
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] ${
-                      det.verification_status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
-                    }`}>
-                      {det.verification_status === 'rejected' ? 'Removed' : 'Kept'}
-                    </span>
-                  </div>
-                  <div className="text-gray-500 mt-1">
-                    Page {det.page_number} | Conf: {(det.confidence * 100).toFixed(0)}%
-                  </div>
+                  ✕ Clear filter (show all)
+                </button>
+              )}
+              {searchSelectedOnly && (
+                <div className="flex gap-2 mt-2 pt-2 border-t">
+                  <span className="text-xs text-gray-500">Process filter:</span>
+                  <button onClick={selectAllLegendItems} className="text-xs text-indigo-600 hover:underline">Select All</button>
+                  <button onClick={deselectAllLegendItems} className="text-xs text-gray-500 hover:underline">Clear</button>
                 </div>
-              ))}
-            </div>
-          </>
-        )}
-
-        {/* LLM Verification stage: Show verification status */}
-        {currentStage === 2 && (
-          <>
-            <div className="p-4 border-b bg-gray-50">
-              <h3 className="font-semibold text-gray-800">LLM Verification Results</h3>
-              <div className="text-xs mt-2 space-y-2">
-                {/* Icons */}
-                <div className="bg-white rounded p-2 border">
-                  <div className="font-medium text-gray-700 mb-1">🔷 Icons ({stageCounts.icons})</div>
-                  <div className="flex gap-2 text-[10px]">
-                    <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded">✓ {stageCounts.iconVerified}</span>
-                    <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded">✗ {stageCounts.iconRejected}</span>
-                    <span className="bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">⏳ {stageCounts.iconPending}</span>
-                  </div>
-                </div>
-                {/* Tags */}
-                <div className="bg-white rounded p-2 border">
-                  <div className="font-medium text-gray-700 mb-1">📝 Tags ({stageCounts.labelsAfterOverlap})</div>
-                  <div className="flex gap-2 text-[10px]">
-                    <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded">✓ {stageCounts.labelVerified}</span>
-                    <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded">✗ {stageCounts.labelsRejectedByLLM}</span>
-                    <span className="bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">⏳ {stageCounts.labelPending}</span>
-                  </div>
-                </div>
-                {/* Final */}
-                <div className="bg-green-50 rounded p-2 border border-green-200">
-                  <div className="flex justify-between text-green-700">
-                    <span className="font-medium">Ready for Matching:</span>
-                    <span className="font-bold">{stageCounts.iconVerified + stageCounts.labelVerified}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {showIcons && filteredIconDetections.map((det, index) => (
-                <div
-                  key={det.id}
-                  onClick={() => {
-                    setSelectedDetectionId(det.id);
-                    setScrollToPage(det.page_number);
-                  }}
-                  className={`
-                    p-2 rounded border text-xs cursor-pointer transition-all
-                    ${selectedDetectionId === det.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'}
-                  `}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium">🔷 Icon #{index + 1}</span>
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] ${
-                      det.verification_status === 'verified' ? 'bg-green-100 text-green-700' :
-                      det.verification_status === 'rejected' ? 'bg-red-100 text-red-700' :
-                      'bg-yellow-100 text-yellow-700'
-                    }`}>
-                      {det.verification_status || 'pending'}
-                    </span>
-                  </div>
-                  <div className="text-gray-500 mt-1">
-                    Page {det.page_number} | Conf: {(det.confidence * 100).toFixed(0)}%
-                  </div>
-                </div>
-              ))}
-              {showLabels && filteredLabelDetections.map((det, index) => (
-                <div
-                  key={det.id}
-                  onClick={() => {
-                    setSelectedDetectionId(det.id);
-                    setScrollToPage(det.page_number);
-                  }}
-                  className={`
-                    p-2 rounded border text-xs cursor-pointer transition-all
-                    ${selectedDetectionId === det.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'}
-                  `}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium">
-                      📝 {det.tag_name ? `"${det.tag_name}"` : `Label #${index + 1}`}
-                    </span>
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] ${
-                      det.verification_status === 'verified' ? 'bg-green-100 text-green-700' :
-                      det.verification_status === 'rejected' ? 'bg-red-100 text-red-700' :
-                      'bg-yellow-100 text-yellow-700'
-                    }`}>
-                      {det.verification_status || 'pending'}
-                    </span>
-                  </div>
-                  <div className="text-gray-500 mt-1">
-                    Page {det.page_number} | Conf: {(det.confidence * 100).toFixed(0)}%
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
-        {/* Matching stages: Match list (stages 3-5 only) */}
-        {currentStage >= 3 && currentStage <= 5 && (
-          <>
-            <div className="p-4 border-b bg-gray-50">
-              <h3 className="font-semibold text-gray-800">
-                {currentStage === 3 ? 'Basic Matching' : currentStage === 4 ? 'Tag→Icon Matching' : 'Icon→Tag Matching'}
-              </h3>
-              <div className="text-xs mt-2 space-y-1">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Input:</span>
-                  <span className="font-medium">{stageCounts.iconVerified} icons, {stageCounts.labelVerified} tags</span>
-                </div>
-                <div className="flex justify-between text-green-600">
-                  <span>🔗 Matched:</span>
-                  <span className="font-medium">{stageCounts.matched} pairs</span>
-                </div>
-                {stageCounts.unmatchedIcons > 0 && (
-                  <div className="flex justify-between text-amber-600">
-                    <span>⚠️ Unmatched Icons:</span>
-                    <span className="font-medium">{stageCounts.unmatchedIcons}</span>
-                  </div>
+              )}
+              {/* Stage-specific stats */}
+              <div className="text-xs mt-3 space-y-1 bg-white rounded p-2 border">
+                {currentStage === 1 && (
+                  <>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Before:</span>
+                      <span className="font-medium">{stageCounts.labels} tags</span>
+                    </div>
+                    <div className="flex justify-between text-red-600">
+                      <span>🗑️ Removed:</span>
+                      <span className="font-medium">-{stageCounts.labelsRemovedByOverlap}</span>
+                    </div>
+                    <div className="flex justify-between text-green-600 border-t pt-1">
+                      <span>✓ Remaining:</span>
+                      <span className="font-medium">{stageCounts.labelsAfterOverlap}</span>
+                    </div>
+                  </>
                 )}
-                {stageCounts.unassignedTags > 0 && (
-                  <div className="flex justify-between text-purple-600">
-                    <span>🏷️ Unassigned Tags:</span>
-                    <span className="font-medium">{stageCounts.unassignedTags}</span>
-                  </div>
+                {currentStage === 2 && (
+                  <>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">🔷 Icons:</span>
+                      <span className="font-medium">
+                        <span className="text-green-600">{stageCounts.iconVerified}✓</span>
+                        {' / '}
+                        <span className="text-red-600">{stageCounts.iconRejected}✗</span>
+                        {' / '}
+                        <span className="text-yellow-600">{stageCounts.iconPending}⏳</span>
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">📝 Tags:</span>
+                      <span className="font-medium">
+                        <span className="text-green-600">{stageCounts.labelVerified}✓</span>
+                        {' / '}
+                        <span className="text-red-600">{stageCounts.labelsRejectedByLLM}✗</span>
+                        {' / '}
+                        <span className="text-yellow-600">{stageCounts.labelPending}⏳</span>
+                      </span>
+                    </div>
+                  </>
+                )}
+                {currentStage >= 3 && (
+                  <>
+                    <div className="flex justify-between text-green-600">
+                      <span>🔗 Matched:</span>
+                      <span className="font-medium">{stageCounts.matched}</span>
+                    </div>
+                    <div className="flex justify-between text-amber-600">
+                      <span>⚠️ Unmatched Icons:</span>
+                      <span className="font-medium">{stageCounts.unmatchedIcons}</span>
+                    </div>
+                    <div className="flex justify-between text-purple-600">
+                      <span>🏷️ Unassigned Tags:</span>
+                      <span className="font-medium">{stageCounts.unassignedTags}</span>
+                    </div>
+                  </>
                 )}
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {filteredMatches.length === 0 ? (
-                <div className="text-center text-gray-500 py-8 text-sm">
-                  No matches yet. Run Basic Matching first.
-                </div>
-              ) : (
-                filteredMatches.map((match, index) => {
-                  const icon = match.icon_detection_id 
-                    ? (iconDetections || []).find(d => d.id === match.icon_detection_id) 
-                    : null;
-                  const label = match.label_detection_id 
-                    ? (labelDetections || []).find(d => d.id === match.label_detection_id) 
-                    : null;
-                  
-                  // Get page number from icon or label (for unassigned tags)
-                  const pageNumber = icon?.page_number || label?.page_number;
-                  
-                  // Status badge styles
-                  const statusStyles = {
-                    'matched': 'bg-green-100 text-green-700',
-                    'unmatched_icon': 'bg-yellow-100 text-yellow-700',
-                    'unassigned_tag': 'bg-purple-100 text-purple-700',
-                  };
-                  
-                  return (
-                    <div
-                      key={match.id}
-                      onClick={() => pageNumber && setScrollToPage(pageNumber)}
-                      className="p-2 rounded border border-gray-200 text-xs cursor-pointer hover:bg-gray-50"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium">
-                          {match.match_status === 'unassigned_tag' 
-                            ? `Tag: ${label?.tag_name || 'Unknown'}` 
-                            : `Match #${index + 1}`}
-                        </span>
-                        <div className="flex gap-1">
-                          {(match.match_method === 'llm_tag_for_icon' || match.match_method === 'llm_icon_for_tag') && (
-                            <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded text-[10px]">AI</span>
-                          )}
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] ${
-                            statusStyles[match.match_status] || 'bg-gray-100 text-gray-700'
-                          }`}>
-                            {match.match_status === 'unassigned_tag' ? 'no icon' : match.match_status}
+            <div className="flex-1 overflow-y-auto p-2 space-y-2">
+              {legendItems.map((item, index) => {
+                const isSelectedForOverlay = selectedSidebarLegendItem?.id === item.id;
+                const isCheckedForProcess = selectedLegendItemIds.has(item.id);
+                const hasIcon = item.icon_template;
+                const hasTags = item.label_templates?.length > 0;
+                const iconUrl = hasIcon ? api.getIconTemplateImage(item.id, false) : null;
+                const tagNames = hasTags ? item.label_templates.map(t => t.tag_name || item.label_text).filter(Boolean) : [];
+                
+                // Calculate item-specific counts
+                const itemIconTemplateId = item.icon_template?.id;
+                const itemLabelTemplateIds = (item.label_templates || []).map(t => t.id);
+                
+                const itemIconCount = (iconDetections || []).filter(d => d.icon_template_id === itemIconTemplateId).length;
+                const itemLabelCount = (labelDetections || []).filter(d => itemLabelTemplateIds.includes(d.label_template_id)).length;
+                
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => {
+                      setSelectedSidebarLegendItem(isSelectedForOverlay ? null : item);
+                      // Find first detection for this item and scroll to it
+                      if (!isSelectedForOverlay) {
+                        const firstIconDet = (iconDetections || []).find(d => d.icon_template_id === itemIconTemplateId);
+                        const firstLabelDet = (labelDetections || []).find(d => itemLabelTemplateIds.includes(d.label_template_id));
+                        const firstDet = firstIconDet || firstLabelDet;
+                        if (firstDet) setScrollToPage(firstDet.page_number);
+                      }
+                    }}
+                    className={`
+                      p-3 rounded-lg border text-sm transition-all cursor-pointer
+                      ${isSelectedForOverlay ? 'border-indigo-500 bg-indigo-50 shadow-sm' : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'}
+                    `}
+                  >
+                    <div className="flex items-start gap-3">
+                      {searchSelectedOnly && (
+                        <input
+                          type="checkbox"
+                          checked={isCheckedForProcess}
+                          onChange={() => toggleLegendItemSelection(item.id)}
+                          className="mt-1 w-4 h-4 text-indigo-600 rounded"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      )}
+                      {/* Icon thumbnail */}
+                      <div className="flex-shrink-0 w-10 h-10">
+                        {hasIcon ? (
+                          <img 
+                            src={iconUrl} 
+                            alt="Icon" 
+                            className="w-10 h-10 object-contain border border-gray-200 rounded bg-white"
+                            onError={(e) => {
+                              e.target.onerror = null;
+                              e.target.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"%3E%3Crect fill="%23f3f4f6" width="40" height="40"/%3E%3Ctext x="50%25" y="50%25" font-size="8" fill="%239ca3af" text-anchor="middle" dy=".3em"%3ENo img%3C/text%3E%3C/svg%3E';
+                            }}
+                          />
+                        ) : (
+                          <div className="w-10 h-10 border border-dashed border-gray-300 rounded flex items-center justify-center text-gray-400 text-[9px] text-center leading-tight">
+                            No<br/>Icon
+                          </div>
+                        )}
+                      </div>
+                      
+                      <div className="flex-1 min-w-0">
+                        {/* Description */}
+                        <div className="font-medium text-gray-800 truncate">
+                          {item.description || `Item ${index + 1}`}
+                        </div>
+                        
+                        {/* Tags */}
+                        {tagNames.length > 0 ? (
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {tagNames.map((tag, i) => (
+                              <span 
+                                key={i}
+                                className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800"
+                              >
+                                🏷️ {tag}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-xs text-gray-400 mt-1.5">No tags defined</div>
+                        )}
+                        
+                        {/* Detection counts */}
+                        <div className="flex gap-2 mt-2 text-[10px]">
+                          <span className={`px-1.5 py-0.5 rounded ${itemIconCount > 0 ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                            🔷 {itemIconCount} icons
+                          </span>
+                          <span className={`px-1.5 py-0.5 rounded ${itemLabelCount > 0 ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                            📝 {itemLabelCount} tags
                           </span>
                         </div>
                       </div>
-                      <div className="text-gray-500 mt-1">
-                        Page {pageNumber || '?'}
-                        {match.llm_assigned_label && <span className="text-purple-600 ml-1">"{match.llm_assigned_label}"</span>}
-                        {match.distance > 0 && <span className="ml-1">| Dist: {match.distance.toFixed(0)}px</span>}
-                      </div>
                     </div>
-                  );
-                })
-              )}
+                  </div>
+                );
+              })}
             </div>
           </>
         )}

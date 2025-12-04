@@ -5,7 +5,7 @@ Detects overlapping tag bounding boxes and resolves using LLM.
 
 import os
 import tempfile
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from uuid import UUID
 
 from fastapi import Depends
@@ -623,6 +623,7 @@ Rules:
         self,
         project: Project,
         page_id: UUID = None,
+        legend_item_ids: Optional[List[UUID]] = None,
     ) -> Dict:
         """
         Main processing function: detect overlapping bbox tags and resolve using LLM.
@@ -630,6 +631,7 @@ Rules:
         Args:
             project: Project to process
             page_id: Optional specific page ID to process
+            legend_item_ids: Optional list of legend item IDs to limit processing
 
         Returns:
             Summary dict with resolution statistics
@@ -637,18 +639,31 @@ Rules:
         print(f"\n{'='*60}")
         print(f"TAG OVERLAP RESOLUTION")
         print(f"{'='*60}")
+        
+        if legend_item_ids:
+            print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
+
+        # Get label template IDs for the selected legend items (if filtering)
+        label_template_ids = None
+        if legend_item_ids:
+            label_template_ids = [
+                t.id for t in self.db.query(LabelTemplate.id).filter(
+                    LabelTemplate.legend_item_id.in_(legend_item_ids)
+                ).all()
+            ]
+            print(f"   📌 Found {len(label_template_ids)} label template(s) for selected legend items")
 
         # Reset only overlap_removal rejected tags back to pending for fresh overlap analysis
         # This allows re-running overlap removal multiple times without affecting LLM rejections
-        reset_count = (
-            self.db.query(LabelDetection)
-            .filter(
-                LabelDetection.project_id == project.id,
-                LabelDetection.verification_status == "rejected",
-                LabelDetection.rejection_source == "overlap_removal",
-            )
-            .update({"verification_status": "pending", "rejection_source": None})
+        reset_query = self.db.query(LabelDetection).filter(
+            LabelDetection.project_id == project.id,
+            LabelDetection.verification_status == "rejected",
+            LabelDetection.rejection_source == "overlap_removal",
         )
+        if label_template_ids:
+            reset_query = reset_query.filter(LabelDetection.label_template_id.in_(label_template_ids))
+        
+        reset_count = reset_query.update({"verification_status": "pending", "rejection_source": None})
         if reset_count > 0:
             self.db.commit()
             print(f"   Reset {reset_count} previously overlap-removed tags to pending")
@@ -670,6 +685,9 @@ Rules:
 
         if page_id:
             query = query.filter(LabelDetection.page_id == page_id)
+        
+        if label_template_ids:
+            query = query.filter(LabelDetection.label_template_id.in_(label_template_ids))
 
         detections = query.order_by(LabelDetection.page_id).all()
 

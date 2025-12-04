@@ -163,25 +163,35 @@ def create_label_template(
     return {"label_template_id": str(template.id), "url": template.cropped_label_url}
 
 
+class DetectLabelsRequest(BaseModel):
+    """Request body for label detection with optional legend item filter."""
+    legend_item_ids: Optional[List[UUID]] = None  # If provided, only detect for these legend items
+
+
 @router.post(
     "/projects/{project_id}/detect-labels",
     response_model=List[LabelDetectionResponse],
 )
 def detect_labels(
     project_id: UUID,
+    request: Optional[DetectLabelsRequest] = None,
     db: Session = Depends(get_db),
     label_service: LabelService = Depends(get_label_service),
 ):
+    legend_item_ids = request.legend_item_ids if request else None
+    
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         print(f"❌ [LABEL DETECTION] Project not found: {project_id}")
         raise HTTPException(status_code=404, detail="Project not found.")
     
-    # Cascade reset: Clear only label detections (not icons)
-    cascade_reset_from_stage(db, project_id, stage=0, detection_type="labels")
+    # Cascade reset: Clear only label detections for the selected legend items (or all if none selected)
+    cascade_reset_from_stage(db, project_id, stage=0, detection_type="labels", legend_item_ids=legend_item_ids)
     
     print(f"🔍 [LABEL DETECTION] Starting label detection for project: {project_id}")
-    detections = label_service.detect_labels(project)
+    if legend_item_ids:
+        print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
+    detections = label_service.detect_labels(project, legend_item_ids=legend_item_ids)
     print(f"✅ [LABEL DETECTION] Detection complete! Found {len(detections)} label detections")
     
     # Only transition state if not already past this stage (allows re-detection)
@@ -327,13 +337,17 @@ def verify_label_detections(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     
-    # Cascade reset: Clear only label verification (not icons)
-    cascade_reset_from_stage(db, project_id, stage=2, detection_type="labels")
-    
+    legend_item_ids = payload.legend_item_ids if payload else None
     batch_size = payload.batch_size if payload else 10
     
+    # Cascade reset: Clear only label verification (not icons) - only if processing all
+    if not legend_item_ids:
+        cascade_reset_from_stage(db, project_id, stage=2, detection_type="labels")
+    
     print(f"🔍 [LLM VERIFY] Starting label verification for project: {project_id}")
-    result = verification_service.verify_label_detections(project, batch_size=batch_size)
+    if legend_item_ids:
+        print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
+    result = verification_service.verify_label_detections(project, batch_size=batch_size, legend_item_ids=legend_item_ids)
     print(f"✅ [LLM VERIFY] Verification complete!")
     
     return LLMVerificationResponse(
@@ -342,7 +356,14 @@ def verify_label_detections(
         llm_approved=result["llm_approved"],
         llm_rejected=result["llm_rejected"],
         threshold_used=result["threshold_used"],
+        early_stopped=result.get("early_stopped", False),
+        early_stop_rejected=result.get("early_stop_rejected", 0),
     )
+
+
+class ResolveOverlapsRequest(BaseModel):
+    """Request body for overlap resolution with optional legend item filter."""
+    legend_item_ids: Optional[List[UUID]] = None
 
 
 @router.post(
@@ -351,6 +372,7 @@ def verify_label_detections(
 )
 def resolve_tag_overlaps(
     project_id: UUID,
+    request: Optional[ResolveOverlapsRequest] = None,
     db: Session = Depends(get_db),
     overlap_service: TagOverlapService = Depends(get_tag_overlap_service),
 ):
@@ -363,15 +385,21 @@ def resolve_tag_overlaps(
     Note: This is automatically called during matching, but can be called
     separately if needed.
     """
+    legend_item_ids = request.legend_item_ids if request else None
+    
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     
     # Cascade reset: Clear downstream data (Stage 1 - Overlap Removal)
-    cascade_reset_from_stage(db, project_id, stage=1)
+    # Note: When processing specific legend items, we don't clear other items' data
+    if not legend_item_ids:
+        cascade_reset_from_stage(db, project_id, stage=1)
     
     print(f"🔍 [OVERLAP] Starting tag overlap resolution for project: {project_id}")
-    result = overlap_service.resolve_overlaps(project)
+    if legend_item_ids:
+        print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
+    result = overlap_service.resolve_overlaps(project, legend_item_ids=legend_item_ids)
     print(f"✅ [OVERLAP] Overlap resolution complete!")
     
     return TagOverlapResolutionResponse(

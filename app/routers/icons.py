@@ -1,8 +1,9 @@
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import Depends, HTTPException
 from fastapi.routing import APIRouter
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -99,25 +100,35 @@ def get_icon_template(
     return IconTemplateResponse.model_validate(template)
 
 
+class DetectIconsRequest(BaseModel):
+    """Request body for icon detection with optional legend item filter."""
+    legend_item_ids: Optional[List[UUID]] = None  # If provided, only detect for these legend items
+
+
 @router.post(
     "/projects/{project_id}/detect-icons", response_model=List[IconDetectionResponse]
 )
 def detect_icons(
     project_id: UUID,
+    request: Optional[DetectIconsRequest] = None,
     db: Session = Depends(get_db),
     icon_service: IconService = Depends(get_icon_service),
 ):
+    legend_item_ids = request.legend_item_ids if request else None
     print(f"🔍 [ICON DETECTION] Starting icon detection for project: {project_id}")
+    if legend_item_ids:
+        print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
+    
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         print(f"❌ [ICON DETECTION] Project not found: {project_id}")
         raise HTTPException(status_code=404, detail="Project not found.")
 
-    # Cascade reset: Clear only icon detections (not labels)
-    cascade_reset_from_stage(db, project_id, stage=0, detection_type="icons")
+    # Cascade reset: Clear only icon detections for the selected legend items (or all if none selected)
+    cascade_reset_from_stage(db, project_id, stage=0, detection_type="icons", legend_item_ids=legend_item_ids)
 
     print(f"📊 [ICON DETECTION] Project found, running detection service...")
-    detections = icon_service.detect_icons(project)
+    detections = icon_service.detect_icons(project, legend_item_ids=legend_item_ids)
     print(f"✅ [ICON DETECTION] Detection complete! Found {len(detections)} icon detections")
     
     current_idx = PROJECT_STATUSES.index(project.status)
@@ -141,23 +152,36 @@ def list_icon_detections(project_id: UUID, db: Session = Depends(get_db)):
     return [IconDetectionResponse.model_validate(det) for det in results]
 
 
+class MatchIconsLabelsRequest(BaseModel):
+    """Request body for icon-label matching with optional legend item filter."""
+    legend_item_ids: Optional[List[UUID]] = None
+
+
 @router.post(
     "/projects/{project_id}/match-icons-labels",
     response_model=List[IconLabelMatchResponse],
 )
 def match_icons_and_labels(
     project_id: UUID,
+    request: Optional[MatchIconsLabelsRequest] = None,
     db: Session = Depends(get_db),
     matching_service: MatchingService = Depends(get_matching_service),
 ):
+    legend_item_ids = request.legend_item_ids if request else None
+    
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
 
-    # Cascade reset: Clear downstream data (Stage 3 - Basic Matching)
-    cascade_reset_from_stage(db, project_id, stage=3)
+    # Cascade reset: Clear downstream data (Stage 3) - only if processing all
+    if not legend_item_ids:
+        cascade_reset_from_stage(db, project_id, stage=3)
+    
+    print(f"🔗 [MATCHING] Starting icon-label matching for project: {project_id}")
+    if legend_item_ids:
+        print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
 
-    matches = matching_service.match_icons_to_labels(project)
+    matches = matching_service.match_icons_to_labels(project, legend_item_ids=legend_item_ids)
     StateManager(db).transition(project, "completed", "matching_complete")
     return [IconLabelMatchResponse.model_validate(match) for match in matches]
 
@@ -331,13 +355,17 @@ def verify_icon_detections(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     
-    # Cascade reset: Clear only icon verification (not labels)
-    cascade_reset_from_stage(db, project_id, stage=2, detection_type="icons")
-    
+    legend_item_ids = payload.legend_item_ids if payload else None
     batch_size = payload.batch_size if payload else 10
     
+    # Cascade reset: Clear only icon verification (not labels) - only if processing all
+    if not legend_item_ids:
+        cascade_reset_from_stage(db, project_id, stage=2, detection_type="icons")
+    
     print(f"🔍 [LLM VERIFY] Starting icon verification for project: {project_id}")
-    result = verification_service.verify_icon_detections(project, batch_size=batch_size)
+    if legend_item_ids:
+        print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
+    result = verification_service.verify_icon_detections(project, batch_size=batch_size, legend_item_ids=legend_item_ids)
     print(f"✅ [LLM VERIFY] Verification complete!")
     
     return LLMVerificationResponse(
@@ -346,6 +374,8 @@ def verify_icon_detections(
         llm_approved=result["llm_approved"],
         llm_rejected=result["llm_rejected"],
         threshold_used=result["threshold_used"],
+        early_stopped=result.get("early_stopped", False),
+        early_stop_rejected=result.get("early_stop_rejected", 0),
     )
 
 
@@ -411,13 +441,17 @@ def match_tags_for_unlabeled_icons(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     
-    # Cascade reset: Clear downstream data (Stage 4 - Tag Matching)
-    cascade_reset_from_stage(db, project_id, stage=4)
-    
+    legend_item_ids = payload.legend_item_ids if payload else None
     save_crops = payload.save_crops if payload else False
     
+    # Cascade reset: Clear downstream data (Stage 4) - only if processing all
+    if not legend_item_ids:
+        cascade_reset_from_stage(db, project_id, stage=4)
+    
     print(f"🔍 [PHASE 5] Starting tag matching for unlabeled icons: {project_id}")
-    result = matcher_service.match_tags_for_unlabeled_icons(project, save_crops=save_crops)
+    if legend_item_ids:
+        print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
+    result = matcher_service.match_tags_for_unlabeled_icons(project, save_crops=save_crops, legend_item_ids=legend_item_ids)
     print(f"✅ [PHASE 5] Tag matching complete!")
     
     return TagMatchingForIconsResponse(
@@ -456,13 +490,17 @@ def match_icons_for_unlabeled_tags(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     
-    # Cascade reset: Clear downstream data (Stage 5 - Icon Matching)
-    cascade_reset_from_stage(db, project_id, stage=5)
-    
+    legend_item_ids = payload.legend_item_ids if payload else None
     save_crops = payload.save_crops if payload else False
     
+    # Cascade reset: Clear downstream data (Stage 5) - only if processing all
+    if not legend_item_ids:
+        cascade_reset_from_stage(db, project_id, stage=5)
+    
     print(f"🔍 [PHASE 6] Starting icon detection for unlabeled tags: {project_id}")
-    result = matcher_service.match_icons_for_unlabeled_tags(project, save_crops=save_crops)
+    if legend_item_ids:
+        print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
+    result = matcher_service.match_icons_for_unlabeled_tags(project, save_crops=save_crops, legend_item_ids=legend_item_ids)
     print(f"✅ [PHASE 6] Icon detection complete!")
     
     return IconMatchingForTagsResponse(

@@ -179,15 +179,21 @@ class IconService:
         self.db.refresh(icon_template)
         return icon_template
 
-    def detect_icons(self, project: Project) -> List[IconDetection]:
+    def detect_icons(self, project: Project, legend_item_ids: List[UUID] = None) -> List[IconDetection]:
         print(f"   📋 Loading icon templates for project...")
-        templates = (
+        query = (
             self.db.query(IconTemplate)
             .join(LegendItem)
             .join(LegendItem.legend_table)
             .filter(LegendItem.legend_table.has(project_id=project.id))
-            .all()
         )
+        
+        # Filter by specific legend items if provided
+        if legend_item_ids:
+            query = query.filter(IconTemplate.legend_item_id.in_(legend_item_ids))
+            print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
+        
+        templates = query.all()
         if not templates:
             print(f"   ❌ No icon templates found!")
             raise HTTPException(
@@ -224,11 +230,21 @@ class IconService:
         print(f"   🗑️ Clearing old detections...")
         # First, delete any icon_label_matches that reference these detections
         from models.detection import IconLabelMatch
-        icon_detection_ids = [
-            d.id for d in self.db.query(IconDetection.id).filter(
-                IconDetection.project_id == project.id
-            ).all()
-        ]
+        
+        # Build query for detections to delete - filter by legend_item_ids if provided
+        detection_query = self.db.query(IconDetection.id).filter(
+            IconDetection.project_id == project.id
+        )
+        if legend_item_ids:
+            # Only delete detections for the specific legend items being re-processed
+            template_ids = [t.id for t in templates]
+            detection_query = detection_query.filter(
+                IconDetection.icon_template_id.in_(template_ids)
+            )
+            print(f"   📌 Only clearing detections for {len(template_ids)} selected template(s)")
+        
+        icon_detection_ids = [d.id for d in detection_query.all()]
+        
         if icon_detection_ids:
             match_deleted = self.db.query(IconLabelMatch).filter(
                 IconLabelMatch.icon_detection_id.in_(icon_detection_ids)
@@ -236,12 +252,14 @@ class IconService:
             self.db.commit()
             print(f"   🗑️ Cleared {match_deleted} old match(es)")
         
-        # Now delete the icon detections
-        deleted_count = self.db.query(IconDetection).filter(
-            IconDetection.project_id == project.id
-        ).delete()
-        self.db.commit()
-        print(f"   ✅ Cleared {deleted_count} old detection(s)")
+            # Now delete the icon detections (only the filtered ones)
+            deleted_count = self.db.query(IconDetection).filter(
+                IconDetection.id.in_(icon_detection_ids)
+            ).delete(synchronize_session=False)
+            self.db.commit()
+            print(f"   ✅ Cleared {deleted_count} old detection(s)")
+        else:
+            print(f"   ✅ No old detections to clear")
 
         detections: List[IconDetection] = []
         print(f"   🔍 Starting detection for {len(templates)} template(s) across {len(pages)} page(s)...")

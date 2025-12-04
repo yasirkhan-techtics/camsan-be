@@ -13,27 +13,29 @@ Pipeline stages:
 5. Icon Matching (Phase 6) - Creates new IconDetection + IconLabelMatch (match_method='llm_matched')
 """
 
+from typing import List, Optional
 from uuid import UUID
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from fastapi import Depends
 
 from database import get_db
-from models.detection import IconDetection, LabelDetection, IconLabelMatch
+from models.detection import IconDetection, LabelDetection, IconLabelMatch, IconTemplate, LabelTemplate
 
 
 class CascadeResetService:
     def __init__(self, db: Session):
         self.db = db
     
-    def reset_from_stage(self, project_id: UUID, stage: int, detection_type: str = "all") -> dict:
+    def reset_from_stage(self, project_id: UUID, stage: int, detection_type: str = "all", legend_item_ids: Optional[List[UUID]] = None) -> dict:
         """
         Reset all data from the given stage onwards.
         
         Args:
             project_id: The project ID
             stage: The stage being re-run (0-5)
-            detection_type: For stage 0, specify "icons", "labels", or "all"
+            detection_type: For stage 0 and 2, specify "icons", "labels", or "all"
+            legend_item_ids: Optional list of legend item IDs to limit reset scope
         
         Returns:
             Dict with counts of deleted/reset records
@@ -48,7 +50,7 @@ class CascadeResetService:
         
         if stage == 0:
             # Re-running Raw Detection: Delete specific detection type
-            result = self._reset_from_raw_detection(project_id, detection_type)
+            result = self._reset_from_raw_detection(project_id, detection_type, legend_item_ids)
         elif stage == 1:
             # Re-running Overlap Removal: Reset label status, delete matches
             result = self._reset_from_overlap_removal(project_id)
@@ -70,37 +72,110 @@ class CascadeResetService:
         self.db.expire_all()
         return result
     
-    def _reset_from_raw_detection(self, project_id: UUID, detection_type: str = "all") -> dict:
+    def _reset_from_raw_detection(self, project_id: UUID, detection_type: str = "all", legend_item_ids: Optional[List[UUID]] = None) -> dict:
         """
         Delete detections and matches for a fresh start.
         
         Args:
             project_id: The project ID
             detection_type: "icons", "labels", or "all"
+            legend_item_ids: Optional list of legend item IDs to limit scope
         """
         matches_deleted = 0
         icon_deleted = 0
         label_deleted = 0
         
+        # If legend_item_ids is provided, only reset data for those specific items
+        # Otherwise, reset all data for the project (backward compatible)
+        
+        if legend_item_ids:
+            # Get template IDs for the selected legend items
+            icon_template_ids = [
+                t.id for t in self.db.query(IconTemplate.id).filter(
+                    IconTemplate.legend_item_id.in_(legend_item_ids)
+                ).all()
+            ]
+            label_template_ids = [
+                t.id for t in self.db.query(LabelTemplate.id).filter(
+                    LabelTemplate.legend_item_id.in_(legend_item_ids)
+                ).all()
+            ]
+            
+            # Build filtered detection queries
+            icon_detection_query = self.db.query(IconDetection.id).filter(
+                IconDetection.project_id == project_id,
+                IconDetection.icon_template_id.in_(icon_template_ids) if icon_template_ids else False
+            )
+            label_detection_query = self.db.query(LabelDetection.id).filter(
+                LabelDetection.project_id == project_id,
+                LabelDetection.label_template_id.in_(label_template_ids) if label_template_ids else False
+            )
+            
+            print(f"   📌 Cascade reset limited to {len(legend_item_ids)} legend item(s)")
+        else:
+            # Full project reset
+            icon_detection_query = self.db.query(IconDetection.id).filter(
+                IconDetection.project_id == project_id
+            )
+            label_detection_query = self.db.query(LabelDetection.id).filter(
+                LabelDetection.project_id == project_id
+            )
+        
         # Delete matches first (foreign key constraints)
-        if detection_type in ("icons", "all"):
-            matches_deleted = self.db.query(IconLabelMatch).filter(
-                IconLabelMatch.icon_detection_id.in_(
-                    self.db.query(IconDetection.id).filter(IconDetection.project_id == project_id)
-                )
-            ).delete(synchronize_session=False)
+        if detection_type == "icons":
+            # Delete matches referencing icon detections
+            icon_ids = [d.id for d in icon_detection_query.all()]
+            if icon_ids:
+                matches_deleted = self.db.query(IconLabelMatch).filter(
+                    IconLabelMatch.icon_detection_id.in_(icon_ids)
+                ).delete(synchronize_session=False)
+        elif detection_type == "labels":
+            # Delete matches referencing label detections
+            label_ids = [d.id for d in label_detection_query.all()]
+            if label_ids:
+                matches_deleted = self.db.query(IconLabelMatch).filter(
+                    IconLabelMatch.label_detection_id.in_(label_ids)
+                ).delete(synchronize_session=False)
+        else:  # "all"
+            # Delete all matches for the filtered detections
+            icon_ids = [d.id for d in icon_detection_query.all()]
+            label_ids = [d.id for d in label_detection_query.all()]
+            if icon_ids or label_ids:
+                conditions = []
+                if icon_ids:
+                    conditions.append(IconLabelMatch.icon_detection_id.in_(icon_ids))
+                if label_ids:
+                    conditions.append(IconLabelMatch.label_detection_id.in_(label_ids))
+                if conditions:
+                    matches_deleted = self.db.query(IconLabelMatch).filter(
+                        or_(*conditions)
+                    ).delete(synchronize_session=False)
         
         # Delete icon detections
         if detection_type in ("icons", "all"):
-            icon_deleted = self.db.query(IconDetection).filter(
-                IconDetection.project_id == project_id
-            ).delete(synchronize_session=False)
+            if legend_item_ids:
+                icon_ids = [d.id for d in icon_detection_query.all()]
+                if icon_ids:
+                    icon_deleted = self.db.query(IconDetection).filter(
+                        IconDetection.id.in_(icon_ids)
+                    ).delete(synchronize_session=False)
+            else:
+                icon_deleted = self.db.query(IconDetection).filter(
+                    IconDetection.project_id == project_id
+                ).delete(synchronize_session=False)
         
         # Delete label detections
         if detection_type in ("labels", "all"):
-            label_deleted = self.db.query(LabelDetection).filter(
-                LabelDetection.project_id == project_id
-            ).delete(synchronize_session=False)
+            if legend_item_ids:
+                label_ids = [d.id for d in label_detection_query.all()]
+                if label_ids:
+                    label_deleted = self.db.query(LabelDetection).filter(
+                        LabelDetection.id.in_(label_ids)
+                    ).delete(synchronize_session=False)
+            else:
+                label_deleted = self.db.query(LabelDetection).filter(
+                    LabelDetection.project_id == project_id
+                ).delete(synchronize_session=False)
         
         print(f"🔄 [CASCADE RESET] Stage 0 (Raw Detection - {detection_type}): Deleted {icon_deleted} icon detections, {label_deleted} label detections, {matches_deleted} matches")
         
@@ -275,7 +350,7 @@ def get_cascade_reset_service(db: Session = Depends(get_db)) -> CascadeResetServ
     return CascadeResetService(db)
 
 
-def cascade_reset_from_stage(db: Session, project_id: UUID, stage: int, detection_type: str = "all") -> dict:
+def cascade_reset_from_stage(db: Session, project_id: UUID, stage: int, detection_type: str = "all", legend_item_ids: Optional[List[UUID]] = None) -> dict:
     """
     Helper function to perform cascade reset using an existing db session.
     Call this directly when you need to ensure the same session is used.
@@ -284,8 +359,9 @@ def cascade_reset_from_stage(db: Session, project_id: UUID, stage: int, detectio
         db: Database session
         project_id: The project ID
         stage: The stage being re-run (0-5)
-        detection_type: For stage 0, specify "icons", "labels", or "all"
+        detection_type: For stage 0 and 2, specify "icons", "labels", or "all"
+        legend_item_ids: Optional list of legend item IDs to limit reset scope
     """
     service = CascadeResetService(db)
-    return service.reset_from_stage(project_id, stage, detection_type)
+    return service.reset_from_stage(project_id, stage, detection_type, legend_item_ids)
 

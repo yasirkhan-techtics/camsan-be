@@ -27,6 +27,9 @@ class LLMVerificationService:
     Service for verifying detection results using LLM.
     Handles both icons and labels with dynamic confidence thresholds.
     """
+    
+    # Early stopping: Stop LLM calls after this many consecutive batches with 0 approvals
+    EARLY_STOP_CONSECUTIVE_FAILURES = 5
 
     def __init__(
         self,
@@ -487,6 +490,7 @@ CRITICAL: You MUST provide exactly {num_items} results."""
         self,
         project: Project,
         batch_size: int = 10,
+        legend_item_ids: List[UUID] = None,
     ) -> Dict:
         """
         Verify icon detections for a project.
@@ -494,6 +498,7 @@ CRITICAL: You MUST provide exactly {num_items} results."""
         Args:
             project: Project to verify
             batch_size: Number of detections per LLM batch
+            legend_item_ids: Optional list of legend item IDs to limit processing
 
         Returns:
             Summary of verification results
@@ -501,10 +506,22 @@ CRITICAL: You MUST provide exactly {num_items} results."""
         print(f"\n{'='*60}")
         print(f"ICON DETECTION VERIFICATION PIPELINE")
         print(f"{'='*60}")
+        
+        if legend_item_ids:
+            print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
+
+        # Get icon template IDs for the selected legend items (if filtering)
+        icon_template_ids = None
+        if legend_item_ids:
+            icon_template_ids = [
+                t.id for t in self.db.query(IconTemplate.id).filter(
+                    IconTemplate.legend_item_id.in_(legend_item_ids)
+                ).all()
+            ]
 
         # Load non-rejected icon detections with templates
         # (excludes detections already rejected by overlap removal or previous runs)
-        detections = (
+        query = (
             self.db.query(IconDetection)
             .filter(
                 IconDetection.project_id == project.id,
@@ -516,8 +533,12 @@ CRITICAL: You MUST provide exactly {num_items} results."""
                 ),
                 selectinload(IconDetection.page),
             )
-            .all()
         )
+        
+        if icon_template_ids:
+            query = query.filter(IconDetection.icon_template_id.in_(icon_template_ids))
+        
+        detections = query.all()
 
         if not detections:
             return {
@@ -543,19 +564,33 @@ CRITICAL: You MUST provide exactly {num_items} results."""
         auto_approved = len(high_conf)
         llm_approved = 0
         llm_rejected = 0
+        
+        # Early stopping tracking
+        consecutive_failures = 0
+        early_stopped = False
+        early_stop_rejected = 0
 
         if low_conf:
-            print(f"\n   Processing {len(low_conf)} low-confidence detections...")
+            # Sort by confidence descending - process highest confidence first
+            low_conf_sorted = sorted(low_conf, key=lambda d: d.confidence, reverse=True)
+            print(f"\n   Processing {len(low_conf_sorted)} low-confidence detections (sorted by confidence desc)...")
+            print(f"   Confidence range: {low_conf_sorted[0].confidence:.3f} to {low_conf_sorted[-1].confidence:.3f}")
 
-            # Group by template for batch processing
+            # Group by template for batch processing (preserving confidence order within groups)
             template_groups = {}
-            for det in low_conf:
+            for det in low_conf_sorted:
                 template_id = det.icon_template_id
                 if template_id not in template_groups:
                     template_groups[template_id] = []
                 template_groups[template_id].append(det)
+            
+            # Track which detections have been processed
+            processed_det_ids = set()
 
             for template_id, group in template_groups.items():
+                if early_stopped:
+                    break
+                    
                 template = group[0].icon_template
                 print(f"\n   Processing template: {template.legend_item.description if template.legend_item else 'Unknown'}")
 
@@ -570,10 +605,13 @@ CRITICAL: You MUST provide exactly {num_items} results."""
 
                     # Process in batches
                     for batch_start in range(0, len(group), batch_size):
+                        if early_stopped:
+                            break
+                            
                         batch_end = min(batch_start + batch_size, len(group))
                         batch = group[batch_start:batch_end]
 
-                        print(f"      Batch {batch_start // batch_size + 1}: {len(batch)} items")
+                        print(f"      Batch {batch_start // batch_size + 1}: {len(batch)} items (conf: {batch[0].confidence:.3f} - {batch[-1].confidence:.3f})")
 
                         # Create crops
                         crops = []
@@ -598,13 +636,18 @@ CRITICAL: You MUST provide exactly {num_items} results."""
                             table_path, "icon", num_items=len(batch)
                         )
 
+                        # Track approvals in this batch
+                        batch_approved = 0
+                        
                         # Update detections
                         if len(results) == len(batch):
                             for det, is_valid in zip(batch, results):
                                 det.verification_status = "verified" if is_valid else "rejected"
                                 self.db.add(det)
+                                processed_det_ids.add(det.id)
                                 if is_valid:
                                     llm_approved += 1
+                                    batch_approved += 1
                                 else:
                                     llm_rejected += 1
                         else:
@@ -612,13 +655,36 @@ CRITICAL: You MUST provide exactly {num_items} results."""
                             for det in batch:
                                 det.verification_status = "rejected"
                                 self.db.add(det)
+                                processed_det_ids.add(det.id)
                             llm_rejected += len(batch)
 
                         # Clean up crops
                         for crop in crops:
                             crop.close()
+                        
+                        # Early stopping logic
+                        if batch_approved == 0:
+                            consecutive_failures += 1
+                            print(f"      ⚠️ No approvals in batch ({consecutive_failures}/{self.EARLY_STOP_CONSECUTIVE_FAILURES} consecutive failures)")
+                            
+                            if consecutive_failures >= self.EARLY_STOP_CONSECUTIVE_FAILURES:
+                                early_stopped = True
+                                print(f"\n   🛑 EARLY STOPPING: {consecutive_failures} consecutive batches with 0 approvals")
+                        else:
+                            consecutive_failures = 0  # Reset on any approval
 
                     template_img.close()
+            
+            # If early stopped, reject all remaining unprocessed detections
+            if early_stopped:
+                for det in low_conf_sorted:
+                    if det.id not in processed_det_ids:
+                        det.verification_status = "rejected"
+                        self.db.add(det)
+                        early_stop_rejected += 1
+                
+                llm_rejected += early_stop_rejected
+                print(f"   🛑 Rejected {early_stop_rejected} remaining detections without LLM verification")
 
         self.db.commit()
 
@@ -628,6 +694,8 @@ CRITICAL: You MUST provide exactly {num_items} results."""
             "llm_approved": llm_approved,
             "llm_rejected": llm_rejected,
             "threshold_used": thresholds,
+            "early_stopped": early_stopped,
+            "early_stop_rejected": early_stop_rejected,
         }
 
         print(f"\n{'='*60}")
@@ -635,6 +703,8 @@ CRITICAL: You MUST provide exactly {num_items} results."""
         print(f"   Auto-approved: {auto_approved}")
         print(f"   LLM approved: {llm_approved}")
         print(f"   LLM rejected: {llm_rejected}")
+        if early_stopped:
+            print(f"   Early stopped: YES ({early_stop_rejected} rejected without LLM)")
         print(f"{'='*60}")
 
         return summary
@@ -643,6 +713,7 @@ CRITICAL: You MUST provide exactly {num_items} results."""
         self,
         project: Project,
         batch_size: int = 10,
+        legend_item_ids: List[UUID] = None,
     ) -> Dict:
         """
         Verify label detections for a project.
@@ -650,6 +721,7 @@ CRITICAL: You MUST provide exactly {num_items} results."""
         Args:
             project: Project to verify
             batch_size: Number of detections per LLM batch
+            legend_item_ids: Optional list of legend item IDs to limit processing
 
         Returns:
             Summary of verification results
@@ -657,10 +729,22 @@ CRITICAL: You MUST provide exactly {num_items} results."""
         print(f"\n{'='*60}")
         print(f"LABEL DETECTION VERIFICATION PIPELINE")
         print(f"{'='*60}")
+        
+        if legend_item_ids:
+            print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
+
+        # Get label template IDs for the selected legend items (if filtering)
+        label_template_ids = None
+        if legend_item_ids:
+            label_template_ids = [
+                t.id for t in self.db.query(LabelTemplate.id).filter(
+                    LabelTemplate.legend_item_id.in_(legend_item_ids)
+                ).all()
+            ]
 
         # Load non-rejected label detections with templates
         # (excludes detections already rejected by overlap removal or previous runs)
-        detections = (
+        query = (
             self.db.query(LabelDetection)
             .filter(
                 LabelDetection.project_id == project.id,
@@ -672,8 +756,12 @@ CRITICAL: You MUST provide exactly {num_items} results."""
                 ),
                 selectinload(LabelDetection.page),
             )
-            .all()
         )
+        
+        if label_template_ids:
+            query = query.filter(LabelDetection.label_template_id.in_(label_template_ids))
+        
+        detections = query.all()
 
         if not detections:
             return {
@@ -699,13 +787,22 @@ CRITICAL: You MUST provide exactly {num_items} results."""
         auto_approved = len(high_conf)
         llm_approved = 0
         llm_rejected = 0
+        
+        # Early stopping tracking
+        consecutive_failures = 0
+        early_stopped = False
+        early_stop_rejected = 0
 
         if low_conf:
-            print(f"\n   Processing {len(low_conf)} low-confidence detections...")
+            # Sort by confidence descending - process highest confidence first
+            low_conf_sorted = sorted(low_conf, key=lambda d: d.confidence, reverse=True)
+            print(f"\n   Processing {len(low_conf_sorted)} low-confidence detections (sorted by confidence desc)...")
+            print(f"   Confidence range: {low_conf_sorted[0].confidence:.3f} to {low_conf_sorted[-1].confidence:.3f}")
 
             # Group by specific tag name for batch processing (e.g., "CL1", "CL2")
+            # Preserve confidence order within groups
             tag_groups = {}
-            for det in low_conf:
+            for det in low_conf_sorted:
                 # Use tag_name from template first, fall back to legend_item.label_text
                 tag_name = (
                     det.label_template.tag_name
@@ -719,17 +816,26 @@ CRITICAL: You MUST provide exactly {num_items} results."""
                 if tag_name not in tag_groups:
                     tag_groups[tag_name] = []
                 tag_groups[tag_name].append(det)
+            
+            # Track which detections have been processed
+            processed_det_ids = set()
 
             with tempfile.TemporaryDirectory() as tmp_dir:
                 for tag_name, group in tag_groups.items():
+                    if early_stopped:
+                        break
+                        
                     print(f"\n   Processing tag: '{tag_name}' ({len(group)} detections)")
 
                     # Process in batches
                     for batch_start in range(0, len(group), batch_size):
+                        if early_stopped:
+                            break
+                            
                         batch_end = min(batch_start + batch_size, len(group))
                         batch = group[batch_start:batch_end]
 
-                        print(f"      Batch {batch_start // batch_size + 1}: {len(batch)} items")
+                        print(f"      Batch {batch_start // batch_size + 1}: {len(batch)} items (conf: {batch[0].confidence:.3f} - {batch[-1].confidence:.3f})")
 
                         # Create crops
                         crops = []
@@ -753,6 +859,9 @@ CRITICAL: You MUST provide exactly {num_items} results."""
                             table_path, "tag", tag_name=tag_name, num_items=len(batch)
                         )
 
+                        # Track approvals in this batch
+                        batch_approved = 0
+                        
                         # Update detections
                         if len(results) == len(batch):
                             for det, is_valid in zip(batch, results):
@@ -760,8 +869,10 @@ CRITICAL: You MUST provide exactly {num_items} results."""
                                 if not is_valid:
                                     det.rejection_source = "llm_verification"
                                 self.db.add(det)
+                                processed_det_ids.add(det.id)
                                 if is_valid:
                                     llm_approved += 1
+                                    batch_approved += 1
                                 else:
                                     llm_rejected += 1
                         else:
@@ -770,11 +881,35 @@ CRITICAL: You MUST provide exactly {num_items} results."""
                                 det.verification_status = "rejected"
                                 det.rejection_source = "llm_verification"
                                 self.db.add(det)
+                                processed_det_ids.add(det.id)
                             llm_rejected += len(batch)
 
                         # Clean up crops
                         for crop in crops:
                             crop.close()
+                        
+                        # Early stopping logic
+                        if batch_approved == 0:
+                            consecutive_failures += 1
+                            print(f"      ⚠️ No approvals in batch ({consecutive_failures}/{self.EARLY_STOP_CONSECUTIVE_FAILURES} consecutive failures)")
+                            
+                            if consecutive_failures >= self.EARLY_STOP_CONSECUTIVE_FAILURES:
+                                early_stopped = True
+                                print(f"\n   🛑 EARLY STOPPING: {consecutive_failures} consecutive batches with 0 approvals")
+                        else:
+                            consecutive_failures = 0  # Reset on any approval
+            
+            # If early stopped, reject all remaining unprocessed detections
+            if early_stopped:
+                for det in low_conf_sorted:
+                    if det.id not in processed_det_ids:
+                        det.verification_status = "rejected"
+                        det.rejection_source = "llm_verification"
+                        self.db.add(det)
+                        early_stop_rejected += 1
+                
+                llm_rejected += early_stop_rejected
+                print(f"   🛑 Rejected {early_stop_rejected} remaining detections without LLM verification")
 
         self.db.commit()
 
@@ -784,6 +919,8 @@ CRITICAL: You MUST provide exactly {num_items} results."""
             "llm_approved": llm_approved,
             "llm_rejected": llm_rejected,
             "threshold_used": thresholds,
+            "early_stopped": early_stopped,
+            "early_stop_rejected": early_stop_rejected,
         }
 
         print(f"\n{'='*60}")
@@ -791,6 +928,8 @@ CRITICAL: You MUST provide exactly {num_items} results."""
         print(f"   Auto-approved: {auto_approved}")
         print(f"   LLM approved: {llm_approved}")
         print(f"   LLM rejected: {llm_rejected}")
+        if early_stopped:
+            print(f"   Early stopped: YES ({early_stop_rejected} rejected without LLM)")
         print(f"{'='*60}")
 
         return summary

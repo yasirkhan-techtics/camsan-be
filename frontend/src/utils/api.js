@@ -29,7 +29,10 @@ export const api = {
   drawIconBbox: (legendItemId, bbox) => axios.post(`${API_BASE}/icons/legend-items/${legendItemId}/draw-icon-bbox`, bbox),
   getIconTemplate: (legendItemId) => axios.get(`${API_BASE}/icons/legend-items/${legendItemId}/icon-template`),
   preprocessIcon: (legendItemId) => axios.post(`${API_BASE}/icons/legend-items/${legendItemId}/preprocess-icon`),
-  detectIcons: (projectId) => axios.post(`${API_BASE}/icons/projects/${projectId}/detect-icons`),
+  detectIcons: (projectId, legendItemIds = null) => axios.post(
+    `${API_BASE}/icons/projects/${projectId}/detect-icons`,
+    legendItemIds ? { legend_item_ids: legendItemIds } : {}
+  ),
   getIconDetections: (params) => axios.get(`${API_BASE}/icons/detections`, { params }),
   createIconDetection: (data) => axios.post(`${API_BASE}/icons/detections`, data),
   updateIconDetection: (id, data) => axios.patch(`${API_BASE}/icons/detections/${id}`, data),
@@ -46,7 +49,10 @@ export const api = {
   getLabelTemplates: (legendItemId) => axios.get(`${API_BASE}/labels/legend-items/${legendItemId}/label-templates`),
   deleteLabelTemplate: (labelTemplateId) => axios.delete(`${API_BASE}/labels/label-templates/${labelTemplateId}`),
   createLabelTemplate: (legendItemId) => axios.post(`${API_BASE}/labels/legend-items/${legendItemId}/label-template`),
-  detectLabels: (projectId) => axios.post(`${API_BASE}/labels/projects/${projectId}/detect-labels`),
+  detectLabels: (projectId, legendItemIds = null) => axios.post(
+    `${API_BASE}/labels/projects/${projectId}/detect-labels`,
+    legendItemIds ? { legend_item_ids: legendItemIds } : {}
+  ),
   getLabelDetections: (params) => axios.get(`${API_BASE}/labels/detections`, { params }),
   createLabelDetection: (data) => axios.post(`${API_BASE}/labels/detections`, data),
   updateLabelDetection: (id, data) => axios.patch(`${API_BASE}/labels/detections/${id}`, data),
@@ -61,7 +67,10 @@ export const api = {
   getLabelTemplateImage: (legendItemId) => `${API_BASE}/files/legend-items/${legendItemId}/label-template`,
 
   // Matching
-  matchIconsAndLabels: (projectId) => axios.post(`${API_BASE}/icons/projects/${projectId}/match-icons-labels`),
+  matchIconsAndLabels: (projectId, legendItemIds = null) => axios.post(
+    `${API_BASE}/icons/projects/${projectId}/match-icons-labels`,
+    legendItemIds ? { legend_item_ids: legendItemIds } : {}
+  ),
   getMatchedResults: (projectId) => axios.get(`${API_BASE}/icons/projects/${projectId}/matched-results`),
 
   // Detection settings
@@ -69,26 +78,38 @@ export const api = {
   updateDetectionSettings: (projectId, data) => axios.put(`${API_BASE}/projects/${projectId}/detection-settings`, data),
 
   // LLM Verification
-  verifyIconDetections: (projectId, batchSize = 10) => 
-    axios.post(`${API_BASE}/icons/projects/${projectId}/verify-icon-detections`, { batch_size: batchSize }),
-  verifyLabelDetections: (projectId, batchSize = 10) => 
-    axios.post(`${API_BASE}/labels/projects/${projectId}/verify-label-detections`, { batch_size: batchSize }),
+  verifyIconDetections: (projectId, legendItemIds = null, batchSize = 10) => 
+    axios.post(`${API_BASE}/icons/projects/${projectId}/verify-icon-detections`, { 
+      batch_size: batchSize,
+      ...(legendItemIds ? { legend_item_ids: legendItemIds } : {})
+    }),
+  verifyLabelDetections: (projectId, legendItemIds = null, batchSize = 10) => 
+    axios.post(`${API_BASE}/labels/projects/${projectId}/verify-label-detections`, { 
+      batch_size: batchSize,
+      ...(legendItemIds ? { legend_item_ids: legendItemIds } : {})
+    }),
   
   // LLM Matching for unmatched items (combined - backward compatible)
   llmMatchUnmatched: (projectId) => 
     axios.post(`${API_BASE}/icons/projects/${projectId}/llm-match-unmatched`),
   
   // Phase 5: Tag matching for unlabeled icons
-  matchTagsForIcons: (projectId) => 
-    axios.post(`${API_BASE}/icons/projects/${projectId}/match-tags-for-icons`),
+  matchTagsForIcons: (projectId, legendItemIds = null) => 
+    axios.post(`${API_BASE}/icons/projects/${projectId}/match-tags-for-icons`,
+      legendItemIds ? { legend_item_ids: legendItemIds } : {}
+    ),
   
   // Phase 6: Icon matching for unlabeled tags
-  matchIconsForTags: (projectId) => 
-    axios.post(`${API_BASE}/icons/projects/${projectId}/match-icons-for-tags`),
+  matchIconsForTags: (projectId, legendItemIds = null) => 
+    axios.post(`${API_BASE}/icons/projects/${projectId}/match-icons-for-tags`,
+      legendItemIds ? { legend_item_ids: legendItemIds } : {}
+    ),
   
   // Tag overlap resolution
-  resolveTagOverlaps: (projectId) => 
-    axios.post(`${API_BASE}/labels/projects/${projectId}/resolve-tag-overlaps`),
+  resolveTagOverlaps: (projectId, legendItemIds = null) => 
+    axios.post(`${API_BASE}/labels/projects/${projectId}/resolve-tag-overlaps`,
+      legendItemIds ? { legend_item_ids: legendItemIds } : {}
+    ),
 };
 
 export default api;

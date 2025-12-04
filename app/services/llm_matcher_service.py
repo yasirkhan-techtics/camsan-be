@@ -632,13 +632,33 @@ You MUST respond with VALID JSON in this exact format:
     def _get_matching_context(
         self,
         project: Project,
+        legend_item_ids: List[UUID] = None,
     ) -> Dict:
         """
         Get common context data needed for LLM matching operations.
         
+        Args:
+            project: Project to process
+            legend_item_ids: Optional list of legend item IDs to limit processing
+        
         Returns:
             Dictionary with all_matches, unmatched_icons, unassigned_tags, padding_stats
         """
+        # Get template IDs for the selected legend items (if filtering)
+        icon_template_ids = None
+        label_template_ids = None
+        if legend_item_ids:
+            icon_template_ids = [
+                t.id for t in self.db.query(IconTemplate.id).filter(
+                    IconTemplate.legend_item_id.in_(legend_item_ids)
+                ).all()
+            ]
+            label_template_ids = [
+                t.id for t in self.db.query(LabelTemplate.id).filter(
+                    LabelTemplate.legend_item_id.in_(legend_item_ids)
+                ).all()
+            ]
+        
         # Get all matches for this project
         # Use outer joins to include all match types:
         # - matched: has both icon and label
@@ -667,6 +687,14 @@ You MUST respond with VALID JSON in this exact format:
             )
             .all()
         )
+        
+        # Filter matches by legend items if specified
+        if legend_item_ids:
+            all_matches = [
+                m for m in all_matches
+                if (m.icon_detection and m.icon_detection.icon_template_id in icon_template_ids) or
+                   (m.label_detection and m.label_detection.label_template_id in label_template_ids)
+            ]
 
         # Calculate padding stats from matched pairs
         padding_stats = self._calculate_padding_stats(all_matches)
@@ -679,12 +707,12 @@ You MUST respond with VALID JSON in this exact format:
 
         # Get unassigned tags (verified tags not paired with an icon)
         # Only consider tags as "matched" if they're in a record with match_status="matched"
-        # Tags in "unassigned_tag" records are still available for LLM matching
         matched_label_ids = {
             m.label_detection_id for m in all_matches 
             if m.label_detection_id and m.match_status == "matched"
         }
-        all_verified_labels = (
+        
+        label_query = (
             self.db.query(LabelDetection)
             .filter(
                 LabelDetection.project_id == project.id,
@@ -696,8 +724,11 @@ You MUST respond with VALID JSON in this exact format:
                 ),
                 selectinload(LabelDetection.page),
             )
-            .all()
         )
+        if label_template_ids:
+            label_query = label_query.filter(LabelDetection.label_template_id.in_(label_template_ids))
+        all_verified_labels = label_query.all()
+        
         unassigned_tags = [
             t for t in all_verified_labels if t.id not in matched_label_ids
         ]
@@ -714,6 +745,7 @@ You MUST respond with VALID JSON in this exact format:
         self,
         project: Project,
         save_crops: bool = False,
+        legend_item_ids: List[UUID] = None,
     ) -> Dict:
         """
         PHASE 5: Match unlabeled icons to tags using LLM.
@@ -724,6 +756,7 @@ You MUST respond with VALID JSON in this exact format:
         Args:
             project: Project to process
             save_crops: Whether to save crop images for debugging
+            legend_item_ids: Optional list of legend item IDs to limit processing
             
         Returns:
             Statistics about matching results
@@ -731,9 +764,12 @@ You MUST respond with VALID JSON in this exact format:
         print(f"\n{'='*60}")
         print(f"PHASE 5: TAG MATCHING FOR UNLABELED ICONS")
         print(f"{'='*60}")
+        
+        if legend_item_ids:
+            print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
 
         # Get matching context
-        context = self._get_matching_context(project)
+        context = self._get_matching_context(project, legend_item_ids=legend_item_ids)
         all_matches = context["all_matches"]
         unmatched_icons = context["unmatched_icons"]
         unassigned_tags = context["unassigned_tags"]
@@ -940,6 +976,7 @@ You MUST respond with VALID JSON in this exact format:
         self,
         project: Project,
         save_crops: bool = False,
+        legend_item_ids: List[UUID] = None,
     ) -> Dict:
         """
         PHASE 6: Detect icons for unassigned tags using LLM + Template Matching.
@@ -953,6 +990,7 @@ You MUST respond with VALID JSON in this exact format:
         Args:
             project: Project to process
             save_crops: Whether to save crop images for debugging
+            legend_item_ids: Optional list of legend item IDs to limit processing
             
         Returns:
             Statistics about detection results
@@ -960,9 +998,12 @@ You MUST respond with VALID JSON in this exact format:
         print(f"\n{'='*60}")
         print(f"PHASE 6: ICON DETECTION FOR UNASSIGNED TAGS")
         print(f"{'='*60}")
+        
+        if legend_item_ids:
+            print(f"   📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
 
         # Get matching context (fresh data after Phase 5)
-        context = self._get_matching_context(project)
+        context = self._get_matching_context(project, legend_item_ids=legend_item_ids)
         all_matches = context["all_matches"]
         unassigned_tags = context["unassigned_tags"]
         padding_stats = context["padding_stats"]

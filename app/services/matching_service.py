@@ -1,11 +1,12 @@
-from typing import List
+from typing import List, Optional
+from uuid import UUID
 
 from fastapi import Depends, HTTPException
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models.detection import IconDetection, IconLabelMatch, LabelDetection
+from models.detection import IconDetection, IconLabelMatch, IconTemplate, LabelDetection, LabelTemplate
 from models.page import PDFPage
 from models.project import Project
 from lib.icon_text_label_matcher import (
@@ -32,6 +33,7 @@ class MatchingService:
         self,
         project: Project,
         resolve_overlaps: bool = False,
+        legend_item_ids: Optional[List[UUID]] = None,
     ) -> List[IconLabelMatch]:
         """
         Match icons to labels using distance-based matching.
@@ -42,16 +44,35 @@ class MatchingService:
         Args:
             project: Project to process
             resolve_overlaps: Whether to automatically resolve tag overlaps (default: False)
+            legend_item_ids: Optional list of legend item IDs to limit processing
             
         Returns:
             List of IconLabelMatch records
         """
         print(f"[MATCHING] Starting matching for project {project.id}")
         
+        if legend_item_ids:
+            print(f"[MATCHING] 📌 Filtering to {len(legend_item_ids)} selected legend item(s)")
+        
+        # Get template IDs for the selected legend items (if filtering)
+        icon_template_ids = None
+        label_template_ids = None
+        if legend_item_ids:
+            icon_template_ids = [
+                t.id for t in self.db.query(IconTemplate.id).filter(
+                    IconTemplate.legend_item_id.in_(legend_item_ids)
+                ).all()
+            ]
+            label_template_ids = [
+                t.id for t in self.db.query(LabelTemplate.id).filter(
+                    LabelTemplate.legend_item_id.in_(legend_item_ids)
+                ).all()
+            ]
+        
         # Step 1: Resolve tag overlaps if explicitly requested (disabled by default)
         if resolve_overlaps and self.tag_overlap_service:
             print(f"[MATCHING] Resolving tag overlaps before matching...")
-            overlap_result = self.tag_overlap_service.resolve_overlaps(project)
+            overlap_result = self.tag_overlap_service.resolve_overlaps(project, legend_item_ids=legend_item_ids)
             print(f"[MATCHING] Overlap resolution: {overlap_result['tags_removed']} tags removed")
         
         pages = (
@@ -98,26 +119,30 @@ class MatchingService:
             print(f"[MATCHING] Processing page {page.page_number} (id={page.id})")
             
             # Only use verified icon detections
-            icon_records = (
+            icon_query = (
                 self.db.query(IconDetection)
                 .filter(
                     IconDetection.project_id == project.id,
                     IconDetection.page_id == page.id,
                     IconDetection.verification_status == "verified",
                 )
-                .all()
             )
+            if icon_template_ids:
+                icon_query = icon_query.filter(IconDetection.icon_template_id.in_(icon_template_ids))
+            icon_records = icon_query.all()
             
             # Only use verified label detections
-            label_records = (
+            label_query = (
                 self.db.query(LabelDetection)
                 .filter(
                     LabelDetection.project_id == project.id,
                     LabelDetection.page_id == page.id,
                     LabelDetection.verification_status == "verified",
                 )
-                .all()
             )
+            if label_template_ids:
+                label_query = label_query.filter(LabelDetection.label_template_id.in_(label_template_ids))
+            label_records = label_query.all()
             
             print(f"[MATCHING] Page {page.page_number}: {len(icon_records)} verified icons, {len(label_records)} verified labels")
 

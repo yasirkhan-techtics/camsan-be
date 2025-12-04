@@ -167,6 +167,7 @@ class CreateLabelDetectionRequest(BaseModel):
 # LLM Verification Schemas
 class LLMVerificationRequest(BaseModel):
     batch_size: int = Field(default=10, ge=1, le=20, description="Number of detections per LLM batch")
+    legend_item_ids: Optional[List[UUID]] = Field(default=None, description="Optional legend item IDs to filter processing")
 
 
 class LLMVerificationResponse(BaseModel):
@@ -175,6 +176,8 @@ class LLMVerificationResponse(BaseModel):
     llm_approved: int = Field(description="Low confidence detections approved by LLM")
     llm_rejected: int = Field(description="Low confidence detections rejected by LLM")
     threshold_used: dict = Field(description="Thresholds calculated for each tag/icon type")
+    early_stopped: bool = Field(default=False, description="Whether early stopping was triggered")
+    early_stop_rejected: int = Field(default=0, description="Detections rejected without LLM due to early stopping")
 
 
 class TagOverlapResolutionResponse(BaseModel):
@@ -187,6 +190,7 @@ class TagOverlapResolutionResponse(BaseModel):
 # LLM Matcher Schemas
 class LLMMatcherRequest(BaseModel):
     save_crops: bool = Field(default=False, description="Save crop images for debugging")
+    legend_item_ids: Optional[List[UUID]] = Field(default=None, description="Optional legend item IDs to filter processing")
 
 
 class LLMMatcherResponse(BaseModel):
