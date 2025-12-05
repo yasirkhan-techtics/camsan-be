@@ -100,7 +100,7 @@ const ProcessingSection = () => {
   const [matchFilter, setMatchFilter] = useState('all');
   const [scrollToPage, setScrollToPage] = useState(null);
   const [selectedDetectionId, setSelectedDetectionId] = useState(null);
-  const [selectedLegendRow, setSelectedLegendRow] = useState(null); // For Legend Counts stage
+  const [selectedLegendRowKey, setSelectedLegendRowKey] = useState(null); // For Legend Counts stage - stores key string only
   const [selectedSidebarLegendItem, setSelectedSidebarLegendItem] = useState(null); // For filtering overlays by legend item
   
   // Detection options
@@ -121,9 +121,10 @@ const ProcessingSection = () => {
     }
   }, [selectedProject]);
 
-  // Clear sidebar legend item selection when stage changes
+  // Clear sidebar legend item selection and legend row when stage changes
   useEffect(() => {
     setSelectedSidebarLegendItem(null);
+    setSelectedLegendRowKey(null);
   }, [currentStage]);
 
   // Filter detections based on current stage and filter
@@ -413,16 +414,16 @@ const ProcessingSection = () => {
           tagName: tagName || '(no tag)',
           count: 0,
           matchIds: [],
-          iconDetectionIds: [],
-          labelDetectionIds: [],
+          iconDetectionIds: new Set(), // Use Set to prevent duplicates
+          labelDetectionIds: new Set(), // Use Set to prevent duplicates
         });
       }
       
       const entry = countsMap.get(key);
       entry.count += 1;
       entry.matchIds.push(match.id);
-      if (match.icon_detection_id) entry.iconDetectionIds.push(match.icon_detection_id);
-      if (match.label_detection_id) entry.labelDetectionIds.push(match.label_detection_id);
+      if (match.icon_detection_id) entry.iconDetectionIds.add(match.icon_detection_id);
+      if (match.label_detection_id) entry.labelDetectionIds.add(match.label_detection_id);
       
       // Mark this icon template as having valid matches
       iconTemplatesWithMatches.add(iconTemplateId);
@@ -447,23 +448,37 @@ const ProcessingSection = () => {
         tagName: '(no matches)',
         count: 0,
         matchIds: [],
-        iconDetectionIds: [],
-        labelDetectionIds: [],
+        iconDetectionIds: new Set(),
+        labelDetectionIds: new Set(),
       });
     });
     
-    // Convert to array and sort: items with counts first, then by description, then by tag
-    return Array.from(countsMap.values()).sort((a, b) => {
-      // Items with count > 0 come first
-      if (a.count > 0 && b.count === 0) return -1;
-      if (a.count === 0 && b.count > 0) return 1;
-      // Then sort by description
-      const descCompare = a.iconDescription.localeCompare(b.iconDescription);
-      if (descCompare !== 0) return descCompare;
-      // Then by tag
-      return (a.tagName || '').localeCompare(b.tagName || '');
-    });
+    // Convert to array, convert Sets to arrays, and sort: items with counts first, then by description, then by tag
+    return Array.from(countsMap.values())
+      .map(entry => ({
+        ...entry,
+        iconDetectionIds: Array.from(entry.iconDetectionIds),
+        labelDetectionIds: Array.from(entry.labelDetectionIds),
+        count: entry.iconDetectionIds.size, // Use unique icon count instead of match count
+      }))
+      .sort((a, b) => {
+        // Items with count > 0 come first
+        if (a.count > 0 && b.count === 0) return -1;
+        if (a.count === 0 && b.count > 0) return 1;
+        // Then sort by description
+        const descCompare = a.iconDescription.localeCompare(b.iconDescription);
+        if (descCompare !== 0) return descCompare;
+        // Then by tag
+        return (a.tagName || '').localeCompare(b.tagName || '');
+      });
   }, [matches, iconDetections, labelDetections, legendItems, legendTables, pdfPages]);
+
+  // Look up the actual selected legend row from legendCounts using the key
+  // This ensures we always use fresh data when legendCounts recalculates
+  const selectedLegendRow = useMemo(() => {
+    if (!selectedLegendRowKey) return null;
+    return legendCounts.find(row => row.key === selectedLegendRowKey) || null;
+  }, [selectedLegendRowKey, legendCounts]);
 
   // PDF URL
   const pdfUrl = selectedProject ? api.getProjectPdf(selectedProject.id) : null;
@@ -689,6 +704,7 @@ const ProcessingSection = () => {
 
     // For legend-counts stage, show selected row's icons only (not labels)
     if (stage === 'legend-counts' && selectedLegendRow) {
+      console.log('[LegendCounts Overlay] Selected row:', selectedLegendRow.key, 'tagName:', selectedLegendRow.tagName, 'iconIds:', selectedLegendRow.iconDetectionIds.length);
       const iconMap = new Map((iconDetections || []).map(d => [d.id, d]));
       
       // Draw icons for selected legend row
@@ -1708,7 +1724,7 @@ const ProcessingSection = () => {
                         key={row.key}
                         onClick={() => {
                           if (row.count === 0) return; // Don't select rows with no matches
-                          setSelectedLegendRow(selectedLegendRow?.key === row.key ? null : row);
+                          setSelectedLegendRowKey(selectedLegendRowKey === row.key ? null : row.key);
                           // Scroll to first detection
                           if (row.iconDetectionIds.length > 0) {
                             const icon = (iconDetections || []).find(d => d.id === row.iconDetectionIds[0]);
@@ -1719,7 +1735,7 @@ const ProcessingSection = () => {
                           border-b border-gray-100 transition-colors
                           ${row.count === 0 
                             ? 'bg-gray-50 opacity-60' 
-                            : selectedLegendRow?.key === row.key 
+                            : selectedLegendRowKey === row.key 
                               ? 'bg-blue-100 hover:bg-blue-150 cursor-pointer' 
                               : 'hover:bg-gray-50 cursor-pointer'}
                         `}

@@ -54,7 +54,7 @@ const LegendItemsSection = () => {
           totalExtracted += response.data?.length || 0;
         } catch (error) {
           console.error(`Error extracting from table ${table.id}:`, error);
-        }
+      }
       }
       
       // Refresh project to get updated legend tables with items
@@ -435,7 +435,7 @@ const LegendItemsSection = () => {
               'bg-blue-100 text-blue-700'
             }`}>
               {extractionMessage}
-            </div>
+          </div>
           )}
         </div>
 
@@ -444,9 +444,9 @@ const LegendItemsSection = () => {
             <div className="text-center text-gray-500 py-8">
               <p className="mb-4">No legend items extracted yet</p>
               {legendTables.length === 0 ? (
-                <p className="text-sm text-gray-400">
+              <p className="text-sm text-gray-400">
                   Go to "Legend Tables" section to create tables first
-                </p>
+              </p>
               ) : (
                 <p className="text-sm text-gray-400">
                   Click "Extract Legend Items" above to extract items from {legendTables.length} table(s)
